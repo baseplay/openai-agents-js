@@ -30,9 +30,9 @@
     "build-check": "tsc --noEmit -p ./tsconfig.test.json"
   },
   "dependencies": {
-    "@openai/agents-core": "workspace:*",
-    "@openai/agents-openai": "workspace:*",
-    "@openai/agents-realtime": "workspace:*",
+    "@openai/agents-core": "^0.1.8",
+    "@openai/agents-openai": "^0.1.9",
+    "@openai/agents-realtime": "^0.1.8",
     "debug": "^4.4.0",
     "openai": "^5.20.2"
   },
