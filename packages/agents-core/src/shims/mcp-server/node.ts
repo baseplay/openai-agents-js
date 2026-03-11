@@ -1,5 +1,7 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
 import {
   BaseMCPServerStdio,
@@ -29,6 +31,34 @@ npm install @modelcontextprotocol/sdk
     `.trim(),
   );
   throw error;
+}
+
+function buildRequestOptions(
+  clientSessionTimeoutSeconds?: number,
+  overrides?: RequestOptions,
+): RequestOptions | undefined {
+  const baseOptions =
+    clientSessionTimeoutSeconds === undefined
+      ? undefined
+      : { timeout: clientSessionTimeoutSeconds * 1000 };
+  const mergedOptions = { ...(baseOptions ?? {}), ...(overrides ?? {}) };
+  return Object.keys(mergedOptions).length === 0 ? undefined : mergedOptions;
+}
+
+type MaybeSessionTransport = Transport & {
+  terminateSession?: () => Promise<void>;
+  sessionId?: string;
+};
+
+function hasSessionTransport(
+  transport: any,
+): transport is MaybeSessionTransport {
+  return (
+    transport != null &&
+    typeof transport.close === 'function' &&
+    (typeof transport.terminateSession === 'function' ||
+      transport.sessionId !== undefined)
+  );
 }
 
 export class NodeMCPServerStdio extends BaseMCPServerStdio {
@@ -84,7 +114,10 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         name: this._name,
         version: '1.0.0', // You may want to make this configurable
       });
-      await this.session.connect(this.transport);
+      const requestOptions = buildRequestOptions(
+        this.clientSessionTimeoutSeconds,
+      );
+      await this.session.connect(this.transport, requestOptions);
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -115,7 +148,10 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     }
 
     this._cacheDirty = false;
-    const response = await this.session.listTools();
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listTools(undefined, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -124,6 +160,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
@@ -133,15 +170,19 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+      { timeout: this.timeout },
+    );
+    const params = {
+      name: toolName,
+      arguments: args ?? {},
+      ...(meta != null ? { _meta: meta } : {}),
+    };
     const response = await this.session.callTool(
-      {
-        name: toolName,
-        arguments: args ?? {},
-      },
+      params,
       undefined,
-      {
-        timeout: this.timeout,
-      },
+      requestOptions,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
@@ -157,8 +198,19 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async close(): Promise<void> {
-    if (this.transport) {
-      await this.transport.close();
+    const transport: any = this.transport;
+
+    if (transport && typeof transport.terminateSession === 'function') {
+      try {
+        // Best-effort cleanup: we do not actively manage session lifecycles,
+        // but if the server supports sessions we terminate to avoid leaks.
+        await transport.terminateSession();
+      } catch (error) {
+        this.logger.warn('Failed to terminate MCP session:', error);
+      }
+    }
+    if (transport) {
+      await transport.close();
       this.transport = null;
     }
     if (this.session) {
@@ -200,12 +252,16 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         authProvider: this.params.authProvider,
         requestInit: this.params.requestInit,
         eventSourceInit: this.params.eventSourceInit,
+        fetch: this.params.fetch,
       });
       this.session = new Client({
         name: this._name,
         version: '1.0.0', // You may want to make this configurable
       });
-      await this.session.connect(this.transport);
+      const requestOptions = buildRequestOptions(
+        this.clientSessionTimeoutSeconds,
+      );
+      await this.session.connect(this.transport, requestOptions);
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -236,7 +292,10 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     }
 
     this._cacheDirty = false;
-    const response = await this.session.listTools();
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listTools(undefined, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -245,6 +304,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
@@ -254,15 +314,19 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+      { timeout: this.timeout },
+    );
+    const params = {
+      name: toolName,
+      arguments: args ?? {},
+      ...(meta != null ? { _meta: meta } : {}),
+    };
     const response = await this.session.callTool(
-      {
-        name: toolName,
-        arguments: args ?? {},
-      },
+      params,
       undefined,
-      {
-        timeout: this.timeout,
-      },
+      requestOptions,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
@@ -278,8 +342,24 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async close(): Promise<void> {
-    if (this.transport) {
-      await this.transport.close();
+    const transport = this.transport;
+
+    if (hasSessionTransport(transport)) {
+      const sessionId = transport.sessionId;
+
+      if (sessionId && typeof transport.terminateSession === 'function') {
+        try {
+          // Best-effort cleanup: we do not actively manage session lifecycles,
+          // but if the server supports sessions we terminate to avoid leaks.
+          await transport.terminateSession();
+        } catch (error) {
+          this.logger.warn('Failed to terminate MCP session:', error);
+        }
+      }
+    }
+
+    if (transport) {
+      await transport.close();
       this.transport = null;
     }
     if (this.session) {
@@ -331,7 +411,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         name: this._name,
         version: '1.0.0', // You may want to make this configurable
       });
-      await this.session.connect(this.transport);
+      const requestOptions = buildRequestOptions(
+        this.clientSessionTimeoutSeconds,
+      );
+      await this.session.connect(this.transport, requestOptions);
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -362,7 +445,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     }
 
     this._cacheDirty = false;
-    const response = await this.session.listTools();
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+    );
+    const response = await this.session.listTools(undefined, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -371,6 +457,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   async callTool(
     toolName: string,
     args: Record<string, unknown> | null,
+    meta?: Record<string, unknown> | null,
   ): Promise<CallToolResultContent> {
     const { CallToolResultSchema } = await import(
       '@modelcontextprotocol/sdk/types.js'
@@ -380,15 +467,19 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
+    const requestOptions = buildRequestOptions(
+      this.clientSessionTimeoutSeconds,
+      { timeout: this.timeout },
+    );
+    const params = {
+      name: toolName,
+      arguments: args ?? {},
+      ...(meta != null ? { _meta: meta } : {}),
+    };
     const response = await this.session.callTool(
-      {
-        name: toolName,
-        arguments: args ?? {},
-      },
+      params,
       undefined,
-      {
-        timeout: this.timeout,
-      },
+      requestOptions,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = parsed.content;
@@ -404,8 +495,24 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   }
 
   async close(): Promise<void> {
-    if (this.transport) {
-      await this.transport.close();
+    const transport = this.transport;
+
+    if (hasSessionTransport(transport)) {
+      const sessionId = transport.sessionId;
+
+      if (sessionId && typeof transport.terminateSession === 'function') {
+        try {
+          // Best-effort cleanup: we do not actively manage session lifecycles,
+          // but if the server supports sessions we terminate to avoid leaks.
+          await transport.terminateSession();
+        } catch (error) {
+          this.logger.warn('Failed to terminate MCP session:', error);
+        }
+      }
+    }
+
+    if (transport) {
+      await transport.close();
       this.transport = null;
     }
     if (this.session) {

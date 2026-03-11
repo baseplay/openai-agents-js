@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
 
 import { Agent } from '../src/agent';
 import {
@@ -11,6 +12,11 @@ import {
   RunToolCallOutputItem as ToolCallOutputItem,
   extractAllTextOutput,
 } from '../src/items';
+import { tool } from '../src/tool';
+import {
+  FUNCTION_TOOL_NAMESPACE,
+  FUNCTION_TOOL_NAMESPACE_DESCRIPTION,
+} from '../src/toolIdentity';
 
 import { TEST_MODEL_MESSAGE, TEST_MODEL_FUNCTION_CALL } from './stubs';
 
@@ -54,6 +60,25 @@ describe('items.extractAllTextOutput', () => {
 });
 
 describe('items toJSON()', () => {
+  function createLegacyNamespacedTool<T extends Record<string, any>>(
+    tool: T,
+    namespace: string,
+    description: string,
+  ): T {
+    return Object.defineProperties(tool, {
+      [FUNCTION_TOOL_NAMESPACE]: {
+        value: namespace,
+        enumerable: false,
+        configurable: true,
+      },
+      [FUNCTION_TOOL_NAMESPACE_DESCRIPTION]: {
+        value: description,
+        enumerable: false,
+        configurable: true,
+      },
+    });
+  }
+
   describe('ToolCallItem', () => {
     const item = new ToolCallItem(
       {
@@ -148,7 +173,7 @@ describe('items toJSON()', () => {
         type: 'function_call_result',
         callId: 'test',
         name: 'test',
-        output: { text: 'test', type: 'text' },
+        output: { type: 'text', text: 'test' },
         status: 'completed',
       },
       new Agent({ name: 'TestAgent' }),
@@ -183,7 +208,61 @@ describe('items toJSON()', () => {
         type: 'tool_approval_item',
         rawItem: item.rawItem,
         agent: item.agent.toJSON(),
+        toolName: 'test',
       });
+    });
+
+    it('keeps top-level deferred approval names unqualified without agent tool metadata', () => {
+      const deferredItem = new ToolApprovalItem(
+        {
+          id: 'approval_1',
+          type: 'function_call',
+          callId: 'call_1',
+          name: 'get_shipping_eta',
+          namespace: 'get_shipping_eta',
+          arguments: '{}',
+          status: 'completed',
+        },
+        new Agent({ name: 'DeferredApprovalAgent' }),
+      );
+
+      expect(deferredItem.toolName).toBe('get_shipping_eta');
+      expect(deferredItem.name).toBe('get_shipping_eta');
+    });
+
+    it('keeps qualified approval names when agent tools resolve a same-name namespace', () => {
+      const namespacedLookupAccount = createLegacyNamespacedTool(
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: z.object({
+            accountId: z.string(),
+          }),
+          deferLoading: true,
+          execute: async () => 'ok',
+        }),
+        'lookup_account',
+        'Resolve same-name namespace members.',
+      );
+
+      const namespacedItem = new ToolApprovalItem(
+        {
+          id: 'approval_2',
+          type: 'function_call',
+          callId: 'call_2',
+          name: 'lookup_account',
+          namespace: 'lookup_account',
+          arguments: '{}',
+          status: 'completed',
+        },
+        new Agent({
+          name: 'NamespacedApprovalAgent',
+          tools: [namespacedLookupAccount],
+        }),
+      );
+
+      expect(namespacedItem.toolName).toBe('lookup_account.lookup_account');
+      expect(namespacedItem.name).toBe('lookup_account.lookup_account');
     });
   });
 });

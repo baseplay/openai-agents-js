@@ -22,13 +22,30 @@ export type FunctionSpanData = SpanDataBase & {
   mcp_data?: string;
 };
 
+export type GenerationUsageData = {
+  input_tokens?: number;
+  output_tokens?: number;
+  details?: Record<string, unknown> | null;
+  [key: string]: unknown;
+};
+
 export type GenerationSpanData = SpanDataBase & {
   type: 'generation';
   input?: Array<Record<string, any>>;
   output?: Array<Record<string, any>>;
   model?: string;
   model_config?: Record<string, any>;
-  usage?: Record<string, any>;
+  /**
+   * Usage fields are intentionally flexible in agents-core tracing.
+   *
+   * Exporters are responsible for backend-specific mapping and validation.
+   * For example, the OpenAI tracing exporter in `@openai/agents-openai` keeps
+   * top-level generation usage to `input_tokens` and `output_tokens` for OpenAI
+   * traces ingest, and maps additional usage fields under `usage.details`.
+   * Third-party exporters can choose their own usage schema and transformation
+   * strategy.
+   */
+  usage?: GenerationUsageData;
 };
 
 export type ResponseSpanData = SpanDataBase & {
@@ -63,7 +80,7 @@ export type TranscriptionSpanData = SpanDataBase & {
   type: 'transcription';
   input: {
     data: string;
-    format: 'pcm' | string;
+    format: 'pcm' | (string & {});
   };
   output?: string;
   model?: string;
@@ -75,7 +92,7 @@ export type SpeechSpanData = SpanDataBase & {
   input?: string;
   output: {
     data: string;
-    format: 'pcm' | string;
+    format: 'pcm' | (string & {});
   };
   model?: string;
   model_config?: Record<string, any>;
@@ -110,9 +127,11 @@ export type SpanOptions<TData extends SpanData> = {
   spanId?: string;
   parentId?: string;
   data: TData;
+  traceMetadata?: Record<string, any>;
   startedAt?: string;
   endedAt?: string;
   error?: SpanError;
+  tracingApiKey?: string;
 };
 
 export type SpanError = {
@@ -127,10 +146,12 @@ export class Span<TData extends SpanData> {
   #traceId: string;
   #spanId: string;
   #parentId: string | null;
+  #traceMetadata: Record<string, any> | undefined;
   #processor: TracingProcessor;
   #startedAt: string | null;
   #endedAt: string | null;
   #error: SpanError | null;
+  #tracingApiKey: string | undefined;
 
   #previousSpan: Span<any> | undefined;
 
@@ -140,9 +161,11 @@ export class Span<TData extends SpanData> {
     this.#data = options.data;
     this.#processor = processor;
     this.#parentId = options.parentId ?? null;
+    this.#traceMetadata = options.traceMetadata;
     this.#error = options.error ?? null;
     this.#startedAt = options.startedAt ?? null;
     this.#endedAt = options.endedAt ?? null;
+    this.#tracingApiKey = options.tracingApiKey;
   }
 
   get traceId() {
@@ -151,6 +174,10 @@ export class Span<TData extends SpanData> {
 
   get spanData() {
     return this.#data;
+  }
+
+  get traceMetadata() {
+    return this.#traceMetadata;
   }
 
   get spanId() {
@@ -205,6 +232,10 @@ export class Span<TData extends SpanData> {
     return this.#endedAt;
   }
 
+  get tracingApiKey() {
+    return this.#tracingApiKey;
+  }
+
   clone(): Span<TData> {
     const span = new Span(
       {
@@ -212,9 +243,11 @@ export class Span<TData extends SpanData> {
         spanId: this.spanId,
         parentId: this.parentId ?? undefined,
         data: this.spanData,
+        traceMetadata: this.traceMetadata,
         startedAt: this.#startedAt ?? undefined,
         endedAt: this.#endedAt ?? undefined,
         error: this.#error ?? undefined,
+        tracingApiKey: this.#tracingApiKey,
       },
       this.#processor,
     );

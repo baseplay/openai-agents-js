@@ -6,10 +6,11 @@ import { FAKE_ID } from './openaiChatCompletionsModel';
 
 type StreamingState = {
   started: boolean;
-  text_content_index_and_output: [number, protocol.OutputText] | null;
-  refusal_content_index_and_output: [number, protocol.Refusal] | null;
+  text_content: protocol.OutputText | null;
+  refusal_content: protocol.Refusal | null;
   function_calls: Record<number, protocol.FunctionCallItem>;
   reasoning: string;
+  finishReason: ChatCompletion['choices'][number]['finish_reason'] | null;
 };
 
 export async function* convertChatCompletionsStreamToResponses(
@@ -19,13 +20,18 @@ export async function* convertChatCompletionsStreamToResponses(
   let usage: CompletionUsage | undefined = undefined;
   const state: StreamingState = {
     started: false,
-    text_content_index_and_output: null,
-    refusal_content_index_and_output: null,
+    text_content: null,
+    refusal_content: null,
     function_calls: {},
     reasoning: '',
+    finishReason: null,
   };
 
   for await (const chunk of stream) {
+    if (chunk.id && (response.id === FAKE_ID || !response.id)) {
+      response.id = chunk.id;
+    }
+
     if (!state.started) {
       state.started = true;
       yield {
@@ -45,16 +51,22 @@ export async function* convertChatCompletionsStreamToResponses(
     // This is always set by the OpenAI API, but not by others e.g. LiteLLM
     usage = (chunk as any).usage || undefined;
 
-    if (!chunk.choices?.[0]?.delta) continue;
-    const delta = chunk.choices[0].delta;
+    const primaryChoice = chunk.choices?.[0];
+    if (!primaryChoice) continue;
+    if (primaryChoice.finish_reason) {
+      state.finishReason = primaryChoice.finish_reason;
+    }
+    if (!primaryChoice.delta) continue;
+    const delta = primaryChoice.delta;
 
     // Handle text
     if (delta.content) {
-      if (!state.text_content_index_and_output) {
-        state.text_content_index_and_output = [
-          !state.refusal_content_index_and_output ? 0 : 1,
-          { text: '', type: 'output_text', providerData: { annotations: [] } },
-        ];
+      if (!state.text_content) {
+        state.text_content = {
+          text: '',
+          type: 'output_text',
+          providerData: { annotations: [] },
+        };
       }
       yield {
         type: 'output_text_delta',
@@ -63,7 +75,7 @@ export async function* convertChatCompletionsStreamToResponses(
           ...chunk,
         },
       };
-      state.text_content_index_and_output[1].text += delta.content;
+      state.text_content.text += delta.content;
     }
 
     if (
@@ -76,13 +88,10 @@ export async function* convertChatCompletionsStreamToResponses(
 
     // Handle refusals
     if ('refusal' in delta && delta.refusal) {
-      if (!state.refusal_content_index_and_output) {
-        state.refusal_content_index_and_output = [
-          !state.text_content_index_and_output ? 0 : 1,
-          { refusal: '', type: 'refusal' },
-        ];
+      if (!state.refusal_content) {
+        state.refusal_content = { refusal: '', type: 'refusal' };
       }
-      state.refusal_content_index_and_output[1].refusal += delta.refusal;
+      state.refusal_content.refusal += delta.refusal;
     }
 
     // Handle tool calls
@@ -90,7 +99,7 @@ export async function* convertChatCompletionsStreamToResponses(
       for (const tc_delta of delta.tool_calls) {
         if (!(tc_delta.index in state.function_calls)) {
           state.function_calls[tc_delta.index] = {
-            id: FAKE_ID,
+            id: response.id || FAKE_ID,
             arguments: '',
             name: '',
             type: 'function_call',
@@ -101,13 +110,16 @@ export async function* convertChatCompletionsStreamToResponses(
         state.function_calls[tc_delta.index].arguments +=
           tc_function?.arguments || '';
         state.function_calls[tc_delta.index].name += tc_function?.name || '';
-        state.function_calls[tc_delta.index].callId += tc_delta.id || '';
+        if (tc_delta.id && !state.function_calls[tc_delta.index].callId) {
+          state.function_calls[tc_delta.index].callId = tc_delta.id;
+        }
       }
     }
   }
 
   // Final output message
   const outputs: protocol.OutputModelItem[] = [];
+  const outputItemId = response.id || FAKE_ID;
 
   if (state.reasoning) {
     outputs.push({
@@ -117,29 +129,43 @@ export async function* convertChatCompletionsStreamToResponses(
     });
   }
 
-  if (
-    state.text_content_index_and_output ||
-    state.refusal_content_index_and_output
-  ) {
-    const assistant_msg: protocol.AssistantMessageItem = {
-      id: FAKE_ID,
-      content: [],
+  if (state.text_content || state.refusal_content) {
+    const content: protocol.AssistantContent[] = [];
+    if (state.text_content) {
+      content.push(state.text_content);
+    }
+    if (state.refusal_content) {
+      content.push(state.refusal_content);
+    }
+    outputs.push({
+      id: outputItemId,
+      content,
       role: 'assistant',
       type: 'message',
       status: 'completed',
-    };
-    if (state.text_content_index_and_output) {
-      assistant_msg.content.push(state.text_content_index_and_output[1]);
-    }
-    if (state.refusal_content_index_and_output) {
-      assistant_msg.content.push(state.refusal_content_index_and_output[1]);
-    }
-    outputs.push(assistant_msg);
+    });
   }
 
   for (const function_call of Object.values(state.function_calls)) {
+    function_call.id = outputItemId;
+    // Some providers, such as Bedrock, may send two items:
+    // 1) an empty argument, and 2) the actual argument data.
+    // This is a workaround for that specific behavior.
+    if (function_call.arguments.startsWith('{}{')) {
+      function_call.arguments = function_call.arguments.slice(2);
+    }
     outputs.push(function_call);
   }
+
+  const traceChoice = buildTraceChoice(state);
+  response.choices = traceChoice ? [traceChoice] : [];
+  response.usage = {
+    prompt_tokens: usage?.prompt_tokens ?? 0,
+    completion_tokens: usage?.completion_tokens ?? 0,
+    total_tokens: usage?.total_tokens ?? 0,
+    prompt_tokens_details: usage?.prompt_tokens_details,
+    completion_tokens_details: usage?.completion_tokens_details,
+  };
 
   // Compose final response
   const finalEvent: protocol.StreamEventResponseCompleted = {
@@ -163,4 +189,39 @@ export async function* convertChatCompletionsStreamToResponses(
   };
 
   yield finalEvent;
+}
+
+function buildTraceChoice(
+  state: StreamingState,
+): ChatCompletion['choices'][number] | undefined {
+  const toolCalls = Object.entries(state.function_calls)
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([, functionCall]) => ({
+      id: functionCall.callId,
+      type: 'function' as const,
+      function: {
+        name: functionCall.name,
+        arguments: functionCall.arguments,
+      },
+    }));
+
+  const content = state.text_content?.text ?? null;
+  const refusal = state.refusal_content?.refusal ?? null;
+
+  if (content === null && refusal === null && toolCalls.length === 0) {
+    return undefined;
+  }
+
+  return {
+    index: 0,
+    logprobs: null,
+    finish_reason:
+      state.finishReason ?? (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
+    message: {
+      role: 'assistant',
+      content,
+      refusal,
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    },
+  };
 }

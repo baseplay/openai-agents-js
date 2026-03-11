@@ -13,7 +13,15 @@ export {
   ToolUseBehavior,
   ToolUseBehaviorFlags,
 } from './agent';
+export type { CompletedAgentToolInvocationRunResult } from './agent';
 export { Computer } from './computer';
+export { ShellAction, ShellResult, ShellOutputResult, Shell } from './shell';
+export {
+  ApplyPatchOperation,
+  ApplyPatchResult,
+  Editor,
+  EditorInvocationContext,
+} from './editor';
 export {
   AgentsError,
   GuardrailExecutionError,
@@ -21,7 +29,10 @@ export {
   MaxTurnsExceededError,
   ModelBehaviorError,
   OutputGuardrailTripwireTriggered,
+  ToolInputGuardrailTripwireTriggered,
+  ToolOutputGuardrailTripwireTriggered,
   ToolCallError,
+  ToolTimeoutError,
   UserError,
   SystemError,
 } from './errors';
@@ -47,6 +58,24 @@ export {
   OutputGuardrailResult,
 } from './guardrail';
 export {
+  ToolGuardrailBehavior,
+  ToolGuardrailFunctionOutput,
+  ToolGuardrailMetadata,
+  ToolInputGuardrailData,
+  ToolInputGuardrailDefinition,
+  ToolInputGuardrailFunction,
+  ToolInputGuardrailResult,
+  ToolOutputGuardrailData,
+  ToolOutputGuardrailDefinition,
+  ToolOutputGuardrailFunction,
+  ToolOutputGuardrailResult,
+  ToolGuardrailFunctionOutputFactory,
+  defineToolInputGuardrail,
+  defineToolOutputGuardrail,
+  resolveToolInputGuardrails,
+  resolveToolOutputGuardrails,
+} from './toolGuardrail';
+export {
   getHandoff,
   getTransferMessage,
   Handoff,
@@ -65,9 +94,12 @@ export {
   RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
 } from './items';
 export { AgentHooks } from './lifecycle';
 export { getLogger } from './logger';
+export { applyDiff } from './utils/applyDiff';
 export {
   getAllMcpTools,
   invalidateServerToolsCache,
@@ -77,11 +109,20 @@ export {
   MCPServerStreamableHttp,
   MCPServerSSE,
   GetAllMcpToolsOptions,
+  MCPToolCacheKeyGenerator,
 } from './mcp';
+export {
+  MCPServers,
+  MCPServersOptions,
+  MCPServersReconnectOptions,
+  connectMcpServers,
+} from './mcpServers';
 export {
   MCPToolFilterCallable,
   MCPToolFilterContext,
   MCPToolFilterStatic,
+  MCPToolMetaContext,
+  MCPToolMetaResolver,
   createMCPToolStaticFilter,
 } from './mcpUtil';
 export {
@@ -112,23 +153,87 @@ export {
   Runner,
   StreamRunOptions,
 } from './run';
+export type {
+  ModelInputData,
+  CallModelInputFilter,
+  CallModelInputFilterArgs,
+  ToolErrorFormatter,
+  ToolErrorFormatterArgs,
+  ReasoningItemIdPolicy,
+  RunErrorData,
+  RunErrorHandler,
+  RunErrorHandlerInput,
+  RunErrorHandlerResult,
+  RunErrorHandlers,
+  RunErrorKind,
+} from './run';
 export { RunContext } from './runContext';
+export type { AgentToolInvocation } from './agentToolInvocation';
 export { RunState } from './runState';
+export type { TracingConfig } from './tracing';
 export {
   HostedTool,
+  attachClientToolSearchExecutor,
   ComputerTool,
   computerTool,
+  ShellTool,
+  shellTool,
+  ApplyPatchTool,
+  applyPatchTool,
   HostedMCPTool,
   hostedMcpTool,
   FunctionTool,
   FunctionToolResult,
+  FunctionToolTimeoutBehavior,
+  ToolTimeoutErrorFunction,
   Tool,
   tool,
+  toolNamespace,
+  invokeFunctionTool,
+  getClientToolSearchExecutor,
+  getToolSearchRuntimeToolKey,
   ToolExecuteArgument,
   ToolEnabledFunction,
+  ToolOptionsWithGuardrails,
 } from './tool';
+export type {
+  ClientToolSearchExecutor,
+  ClientToolSearchExecutorArgs,
+  ClientToolSearchExecutorResult,
+  ComputerOnSafetyCheckFunction,
+  ComputerSafetyCheck,
+  ComputerSafetyCheckResult,
+  ShellToolEnvironment,
+  ShellToolLocalEnvironment,
+  ShellToolLocalSkill,
+  ShellToolHostedEnvironment,
+  ShellToolContainerAutoEnvironment,
+  ShellToolContainerReferenceEnvironment,
+  ShellToolContainerSkill,
+  ShellToolSkillReference,
+  ShellToolInlineSkill,
+  ShellToolInlineSkillSource,
+  ShellToolContainerNetworkPolicy,
+  ShellToolContainerNetworkPolicyAllowlist,
+  ShellToolContainerNetworkPolicyDisabled,
+  ShellToolContainerNetworkPolicyDomainSecret,
+  ToolInputParameters,
+  ToolOptions,
+  ToolNamespaceOptions,
+} from './tool';
+export type {
+  ToolOutputText,
+  ToolOutputImage,
+  ToolOutputFileContent,
+  ToolCallStructuredOutput,
+  ToolCallOutputContent,
+} from './types/protocol';
 export * from './tracing';
 export { getGlobalTraceProvider, TraceProvider } from './tracing/provider';
+export {
+  runToolInputGuardrails,
+  runToolOutputGuardrails,
+} from './utils/toolGuardrails';
 /* only export the types not the parsers */
 export type {
   AgentInputItem,
@@ -137,10 +242,19 @@ export type {
   HostedToolCallItem,
   ComputerCallResultItem,
   ComputerUseCallItem,
+  ShellCallItem,
+  ShellCallResultItem,
+  ApplyPatchCallItem,
+  ApplyPatchCallResultItem,
   FunctionCallItem,
   FunctionCallResultItem,
   JsonSchemaDefinition,
   ReasoningItem,
+  ToolReference,
+  ToolSearchOutputTool,
+  ToolSearchCallArguments,
+  ToolSearchCallItem,
+  ToolSearchOutputItem,
   ResponseStreamEvent,
   SystemMessageItem,
   TextOutput,
@@ -153,7 +267,16 @@ export type {
   StreamEventResponseStarted,
   StreamEventGenericItem,
 } from './types';
-export { Usage } from './usage';
+export { RequestUsage, Usage } from './usage';
+export type {
+  Session,
+  SessionInputCallback,
+  OpenAIResponsesCompactionArgs,
+  OpenAIResponsesCompactionAwareSession,
+  OpenAIResponsesCompactionResult,
+} from './memory/session';
+export { isOpenAIResponsesCompactionAwareSession } from './memory/session';
+export { MemorySession } from './memory/memorySession';
 
 /**
  * Exporting the whole protocol as an object here. This contains both the types

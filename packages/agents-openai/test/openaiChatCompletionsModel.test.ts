@@ -137,6 +137,37 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('sends prompt cache retention when provided', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'cached' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {
+        promptCacheRetention: '24h',
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt_cache_retention: '24h',
+      }),
+      { headers: HEADERS, signal: undefined },
+    );
+  });
+
   it('handles refusal message', async () => {
     const client = new FakeClient();
     const response = {
@@ -283,6 +314,35 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(options).toEqual({ headers: HEADERS, signal: undefined });
   });
 
+  it('passes none reasoning effort through to chat completions payloads', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'gpt-5.1-response',
+      choices: [{ message: { content: 'done' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.1');
+    const req: any = {
+      input: 'prompt',
+      modelSettings: {
+        reasoning: { effort: 'none' },
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('gpt-5.1 none', () => model.getResponse(req));
+
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+    const [args, options] = client.chat.completions.create.mock.calls[0];
+    expect(args.reasoning_effort).toBe('none');
+    expect(options).toEqual({ headers: HEADERS, signal: undefined });
+  });
+
   it('handles function tool calls', async () => {
     const client = new FakeClient();
     const response = {
@@ -335,6 +395,188 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('rejects namespaced function tools before sending a request', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up CRM accounts.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+          namespace: 'crm',
+          namespaceDescription: 'CRM tools',
+        },
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up billing accounts.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+          namespace: 'billing',
+          namespaceDescription: 'Billing tools',
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'Namespaced function tools created with toolNamespace() are only supported with the Responses API.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects deferred function tools before sending a request', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+          deferLoading: true,
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'Function tools with deferLoading: true are only supported with the Responses API.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects required toolChoice when no tools are available', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: { toolChoice: 'required' },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'modelSettings.toolChoice="required" requires at least one available tool in Chat Completions mode.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects named toolChoice when the tool is unavailable', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: { toolChoice: 'missing_tool' },
+      tools: [
+        {
+          type: 'function',
+          name: 'available_tool',
+          description: 'Available tool.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'modelSettings.toolChoice="missing_tool" does not match any available tool or handoff in Chat Completions mode.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it('handles content and tool calls in the same message', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [
+        {
+          message: {
+            content: 'hi',
+            tool_calls: [
+              {
+                id: 'call1',
+                type: 'function',
+                function: { name: 'do', arguments: '{"a":1}' },
+                extra: 'y',
+              },
+            ],
+          },
+        },
+      ],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.output).toEqual([
+      {
+        id: 'r',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'hi',
+            providerData: {
+              tool_calls: [
+                {
+                  id: 'call1',
+                  type: 'function',
+                  function: { name: 'do', arguments: '{"a":1}' },
+                  extra: 'y',
+                },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        id: 'r',
+        type: 'function_call',
+        arguments: '{"a":1}',
+        name: 'do',
+        callId: 'call1',
+        status: 'completed',
+        providerData: {
+          type: 'function',
+          function: { name: 'do', arguments: '{"a":1}' },
+          extra: 'y',
+        },
+      },
+    ]);
+  });
+
   it('uses correct response_format for different output types', async () => {
     const client = new FakeClient();
     const emptyResp = {
@@ -359,7 +601,7 @@ describe('OpenAIChatCompletionsModel', () => {
     );
     expect(
       client.chat.completions.create.mock.calls[0][0].response_format,
-    ).toEqual({ type: 'text' });
+    ).toBeUndefined();
 
     const schema: SerializedOutputType = {
       type: 'json_schema',
@@ -481,5 +723,58 @@ describe('OpenAIChatCompletionsModel', () => {
     );
     expect(convertChatCompletionsStreamToResponses).toHaveBeenCalled();
     expect(events).toEqual([{ type: 'first' }, { type: 'second' }]);
+  });
+
+  it('populates usage from response_done event when initial usage is zero', async () => {
+    // override the original implementation to add the response_done event.
+    vi.mocked(convertChatCompletionsStreamToResponses).mockImplementationOnce(
+      async function* () {
+        yield { type: 'first' } as any;
+        yield { type: 'second' } as any;
+        yield {
+          type: 'response_done',
+          response: {
+            usage: {
+              inputTokens: 10,
+              outputTokens: 5,
+              totalTokens: 15,
+              inputTokensDetails: { cached_tokens: 2 },
+              outputTokensDetails: { reasoning_tokens: 3 },
+            },
+          },
+        } as any;
+      },
+    );
+
+    const client = new FakeClient();
+    async function* fakeStream() {
+      yield { id: 'c' } as any;
+    }
+    client.chat.completions.create.mockResolvedValue(fakeStream());
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'hi',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+    const events: any[] = [];
+    await withTrace('t', async () => {
+      for await (const e of model.getStreamedResponse(req)) {
+        events.push(e);
+      }
+    });
+
+    expect(client.chat.completions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ stream: true }),
+      { headers: HEADERS, signal: undefined },
+    );
+    expect(convertChatCompletionsStreamToResponses).toHaveBeenCalled();
+    const responseDone = events.find((e) => e.type === 'response_done');
+    expect(responseDone).toBeDefined();
+    expect(responseDone.response.usage.totalTokens).toBe(15);
   });
 });

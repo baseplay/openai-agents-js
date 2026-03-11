@@ -23,6 +23,15 @@ on:
       - '!docs/src/content/docs/ja/**'
       - '!docs/src/content/docs/zh/**'
       - '!docs/src/content/docs/ko/**'
+  workflow_dispatch:
+    inputs:
+      translate_mode:
+        description: "Translation mode"
+        type: choice
+        options:
+          - only-changes
+          - full
+        default: only-changes
 
 permissions:
   contents: write
@@ -30,20 +39,27 @@ permissions:
 
 jobs:
   update-docs:
-    if: "!contains(github.event.head_commit.message, 'Update all translated document pages')"
+    if: "github.repository == 'openai/openai-agents-js' && (github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, 'docs: update translated document pages'))"
     runs-on: ubuntu-latest
     steps:
+      - name: Ensure main workflow
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "This workflow must be dispatched from main."
+          exit 1
+
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061
         with:
-          version: 10.17.1
+          version: 10.30.3
           run_install: false
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
         with:
           node-version: 22
           cache: 'pnpm'
@@ -51,13 +67,14 @@ jobs:
         run: pnpm install
 
       - name: Build workspace packages
-        run: pnpm build
+        run: pnpm build:ci
 
       - name: Translate docs
         env:
           OPENAI_API_KEY: ${{ secrets.PROD_OPENAI_API_KEY }}
         run: |
-          pnpm docs:translate
+          mode="${{ inputs.translate_mode || 'only-changes' }}"
+          pnpm docs:translate -- --mode "$mode"
           pnpm docs:build  # to make sure if the generated docs are valid
 
       - name: Commit changes
@@ -66,20 +83,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/
-          if [ -n "$(git status --porcelain)" ]; then
-            git commit -m "Update all translated document pages"
-            echo "committed=true" >> "$GITHUB_OUTPUT"
-          else
+          if git diff --cached --quiet; then
             echo "No changes to commit"
             echo "committed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "docs: update translated document pages"
+            echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create Pull Request
         if: steps.commit.outputs.committed == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0
         with:
-          commit-message: "Update all translated document pages"
-          title: "Update all translated document pages"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "docs: update translated document pages"
+          title: "docs: update translated document pages"
           body: |
             Automated update of translated documentation.
 

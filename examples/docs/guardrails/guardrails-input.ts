@@ -17,11 +17,13 @@ const guardrailAgent = new Agent({
 
 const mathGuardrail: InputGuardrail = {
   name: 'Math Homework Guardrail',
+  // Set runInParallel to false to block the model until the guardrail completes.
+  runInParallel: false,
   execute: async ({ input, context }) => {
     const result = await run(guardrailAgent, input, { context });
     return {
       outputInfo: result.finalOutput,
-      tripwireTriggered: result.finalOutput?.isMathHomework ?? false,
+      tripwireTriggered: result.finalOutput?.isMathHomework === false,
     };
   },
 };

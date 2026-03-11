@@ -1,6 +1,13 @@
 import { Usage } from './usage';
 import { StreamEvent } from './types/protocol';
-import { HostedTool, ComputerTool, FunctionTool } from './tool';
+import {
+  HostedTool,
+  ComputerTool,
+  FunctionTool,
+  ShellTool,
+  ApplyPatchTool,
+} from './tool';
+import { Computer } from './computer';
 import { Handoff } from './handoff';
 import {
   AgentInputItem,
@@ -20,14 +27,16 @@ export type ModelSettingsToolChoice =
 
 /**
  * Constrains effort on reasoning for [reasoning models](https://platform.openai.com/docs/guides/reasoning).
- * Currently supported values are `minimal`, `low`, `medium`, and `high`.
+ * Currently supported values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
  * Reducing reasoning effort can result in faster responses and fewer tokens used on reasoning in a response.
  */
 export type ModelSettingsReasoningEffort =
-  | 'minimal'
+  | 'none' // for gpt-5.1 and newer
+  | 'minimal' // for gpt-5
   | 'low'
   | 'medium'
   | 'high'
+  | 'xhigh'
   | null;
 
 /**
@@ -36,7 +45,7 @@ export type ModelSettingsReasoningEffort =
 export type ModelSettingsReasoning = {
   /**
    * Constrains effort on reasoning for [reasoning models](https://platform.openai.com/docs/guides/reasoning).
-   * Currently supported values are `minimal`, `low`, `medium`, and `high`.
+   * Currently supported values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
    * Reducing reasoning effort can result in faster responses and fewer tokens used on reasoning in a response.
    */
   effort?: ModelSettingsReasoningEffort | null;
@@ -116,6 +125,12 @@ export type ModelSettings = {
   store?: boolean;
 
   /**
+   * Enables prompt caching and controls how long cached content should be retained by the model provider.
+   * See https://platform.openai.com/docs/guides/prompt-caching#prompt-cache-retention for the available options.
+   */
+  promptCacheRetention?: 'in-memory' | '24h' | null;
+
+  /**
    * The reasoning settings to use when calling the model.
    */
   reasoning?: ModelSettingsReasoning;
@@ -160,13 +175,39 @@ export type SerializedFunctionTool = {
    * (might result in slower response times).
    */
   strict: FunctionTool['strict'];
+
+  /**
+   * Responses API only. Whether a top-level function tool stays hidden until tool search loads it.
+   */
+  deferLoading?: FunctionTool['deferLoading'];
+
+  /**
+   * Responses API only. Explicit namespace used to group related function tools.
+   */
+  namespace?: string;
+
+  /**
+   * Responses API only. Description shared by all tools in the namespace. Required when namespace is set.
+   */
+  namespaceDescription?: string;
 };
 
 export type SerializedComputerTool = {
   type: ComputerTool['type'];
   name: ComputerTool['name'];
-  environment: ComputerTool['computer']['environment'];
-  dimensions: ComputerTool['computer']['dimensions'];
+  environment?: Computer['environment'];
+  dimensions?: Computer['dimensions'];
+};
+
+export type SerializedShellTool = {
+  type: ShellTool['type'];
+  name: ShellTool['name'];
+  environment?: ShellTool['environment'];
+};
+
+export type SerializedApplyPatchTool = {
+  type: ApplyPatchTool['type'];
+  name: ApplyPatchTool['name'];
 };
 
 export type SerializedHostedTool = {
@@ -178,6 +219,8 @@ export type SerializedHostedTool = {
 export type SerializedTool =
   | SerializedFunctionTool
   | SerializedComputerTool
+  | SerializedShellTool
+  | SerializedApplyPatchTool
   | SerializedHostedTool;
 
 export type SerializedHandoff = {
@@ -246,6 +289,13 @@ export type ModelRequest = {
   tools: SerializedTool[];
 
   /**
+   * When true, the caller explicitly configured the tools list (even if empty).
+   * Providers can use this to avoid overwriting prompt-defined tools when an agent
+   * does not specify its own tools.
+   */
+  toolsExplicitlyProvided?: boolean;
+
+  /**
    * The type of the output to use for the model.
    */
   outputType: SerializedOutputType;
@@ -269,6 +319,13 @@ export type ModelRequest = {
    * The prompt template to use for the model, if any.
    */
   prompt?: Prompt;
+
+  /**
+   * When true, the resolved model should override the model configured in the prompt template.
+   * Providers that support prompt templates should include the explicit model name in the request
+   * even when a prompt is supplied.
+   */
+  overridePromptModel?: boolean;
 };
 
 export type ModelResponse = {
@@ -287,6 +344,11 @@ export type ModelResponse = {
    * model. Not supported by all model providers.
    */
   responseId?: string;
+
+  /**
+   * The transport request ID for this model call, if provided by the model SDK or transport.
+   */
+  requestId?: string;
 
   /**
    * Raw response data from the underlying model provider.

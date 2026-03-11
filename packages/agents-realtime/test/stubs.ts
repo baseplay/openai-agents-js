@@ -126,6 +126,10 @@ export class FakeTransport
   extends EventEmitterDelegate<RealtimeTransportEventTypes>
   implements RealtimeTransportLayer
 {
+  #functionCallOutputWaiters: Array<{
+    count: number;
+    resolve: (call: [TransportToolCallEvent, string, boolean]) => void;
+  }> = [];
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
     'disconnected';
   muted: boolean = false;
@@ -139,7 +143,7 @@ export class FakeTransport
   eventEmitter = new RuntimeEventEmitter<RealtimeTransportEventTypes>();
   muteCalls: boolean[] = [];
   sendFunctionCallOutputCalls: [TransportToolCallEvent, string, boolean][] = [];
-  sendMcpResponseCalls: [any, boolean][] = [];
+  sendMcpResponseCalls: [any, boolean, string | undefined][] = [];
   interruptCalls = 0;
   resetHistoryCalls: [RealtimeItem[], RealtimeItem[]][] = [];
 
@@ -185,11 +189,38 @@ export class FakeTransport
     output: string,
     startResponse: boolean,
   ): void {
-    this.sendFunctionCallOutputCalls.push([toolCall, output, startResponse]);
+    const call: [TransportToolCallEvent, string, boolean] = [
+      toolCall,
+      output,
+      startResponse,
+    ];
+    this.sendFunctionCallOutputCalls.push(call);
+    const ready = this.#functionCallOutputWaiters.filter(
+      (waiter) => this.sendFunctionCallOutputCalls.length >= waiter.count,
+    );
+    this.#functionCallOutputWaiters = this.#functionCallOutputWaiters.filter(
+      (waiter) => this.sendFunctionCallOutputCalls.length < waiter.count,
+    );
+    for (const waiter of ready) {
+      waiter.resolve(this.sendFunctionCallOutputCalls[waiter.count - 1]!);
+    }
   }
 
-  sendMcpResponse(approvalRequest: any, approved: boolean): void {
-    this.sendMcpResponseCalls.push([approvalRequest, approved]);
+  waitForNextFunctionCallOutput(): Promise<
+    [TransportToolCallEvent, string, boolean]
+  > {
+    const count = this.sendFunctionCallOutputCalls.length + 1;
+    return new Promise((resolve) => {
+      this.#functionCallOutputWaiters.push({ count, resolve });
+    });
+  }
+
+  sendMcpResponse(
+    approvalRequest: any,
+    approved: boolean,
+    reason?: string,
+  ): void {
+    this.sendMcpResponseCalls.push([approvalRequest, approved, reason]);
   }
 
   interrupt(): void {

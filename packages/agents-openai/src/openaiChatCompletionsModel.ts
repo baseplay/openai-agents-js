@@ -1,6 +1,7 @@
 import {
   Model,
   Usage,
+  UserError,
   withGenerationSpan,
   resetCurrentSpan,
   createGenerationSpan,
@@ -26,7 +27,7 @@ import { Span } from '@openai/agents-core/dist/tracing/spans';
 import { GenerationSpanData } from '@openai/agents-core/dist/tracing/spans';
 import { convertChatCompletionsStreamToResponses } from './openaiChatCompletionsStreaming';
 import {
-  convertToolChoice,
+  getCompatibleToolChoice,
   toolToOpenAI,
   convertHandoffTool,
   itemsToMessages,
@@ -99,12 +100,13 @@ export class OpenAIChatCompletionsModel implements Model {
           ],
         });
       }
-      if (
+      const hasContent =
         message.content !== undefined &&
         message.content !== null &&
         // Azure OpenAI returns empty string instead of null for tool calls, causing parser rejection
-        !(message.tool_calls && message.content === '')
-      ) {
+        !(message.tool_calls && message.content === '');
+
+      if (hasContent) {
         const { content, ...rest } = message;
         output.push({
           id: response.id,
@@ -149,7 +151,9 @@ export class OpenAIChatCompletionsModel implements Model {
           ],
           status: 'completed',
         });
-      } else if (message.tool_calls) {
+      }
+
+      if (message.tool_calls) {
         for (const tool_call of message.tool_calls) {
           if (tool_call.type === 'function') {
             // Note: custom tools are not supported for now
@@ -214,6 +218,26 @@ export class OpenAIChatCompletionsModel implements Model {
         response,
         stream,
       )) {
+        if (
+          event.type === 'response_done' &&
+          response.usage?.total_tokens === 0
+        ) {
+          response.usage = {
+            prompt_tokens: event.response.usage.inputTokens,
+            completion_tokens: event.response.usage.outputTokens,
+            total_tokens: event.response.usage.totalTokens,
+            prompt_tokens_details: Array.isArray(
+              event.response.usage.inputTokensDetails,
+            )
+              ? event.response.usage.inputTokensDetails[0]
+              : event.response.usage.inputTokensDetails,
+            completion_tokens_details: Array.isArray(
+              event.response.usage.outputTokensDetails,
+            )
+              ? event.response.usage.outputTokensDetails[0]
+              : event.response.usage.outputTokensDetails,
+          };
+        }
         yield event;
       }
 
@@ -267,6 +291,21 @@ export class OpenAIChatCompletionsModel implements Model {
     const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
     if (request.tools) {
       for (const tool of request.tools) {
+        if (tool.type === 'function') {
+          if (
+            typeof tool.namespace === 'string' &&
+            tool.namespace.trim().length > 0
+          ) {
+            throw new UserError(
+              'Namespaced function tools created with toolNamespace() are only supported with the Responses API.',
+            );
+          }
+          if (tool.deferLoading === true) {
+            throw new UserError(
+              'Function tools with deferLoading: true are only supported with the Responses API.',
+            );
+          }
+        }
         tools.push(toolToOpenAI(tool));
       }
     }
@@ -311,7 +350,13 @@ export class OpenAIChatCompletionsModel implements Model {
       providerData.verbosity = request.modelSettings.text.verbosity;
     }
 
-    const requestData = {
+    type ChatCompletionRequestParams =
+      | (OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming &
+          Record<string, unknown>)
+      | (OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming &
+          Record<string, unknown>);
+
+    const requestData: ChatCompletionRequestParams = {
       model: this.#model,
       messages,
       tools: tools.length ? tools : undefined,
@@ -320,13 +365,21 @@ export class OpenAIChatCompletionsModel implements Model {
       frequency_penalty: request.modelSettings.frequencyPenalty,
       presence_penalty: request.modelSettings.presencePenalty,
       max_tokens: request.modelSettings.maxTokens,
-      tool_choice: convertToolChoice(request.modelSettings.toolChoice),
-      response_format: responseFormat,
+      tool_choice: getCompatibleToolChoice(
+        request.modelSettings.toolChoice,
+        tools,
+      ),
       parallel_tool_calls: parallelToolCalls,
-      stream,
+      stream: stream ? true : false,
+      stream_options: stream ? { include_usage: true } : undefined,
       store: request.modelSettings.store,
+      prompt_cache_retention: request.modelSettings.promptCacheRetention,
       ...providerData,
     };
+
+    if (responseFormat) {
+      requestData.response_format = responseFormat;
+    }
 
     if (logger.dontLogModelData) {
       logger.debug('Calling LLM');
@@ -352,9 +405,16 @@ export class OpenAIChatCompletionsModel implements Model {
 
 function getResponseFormat(
   outputType: SerializedOutputType,
-): ResponseFormatText | ResponseFormatJSONSchema | ResponseFormatJSONObject {
+):
+  | ResponseFormatText
+  | ResponseFormatJSONSchema
+  | ResponseFormatJSONObject
+  | undefined {
   if (outputType === 'text') {
-    return { type: 'text' };
+    // Avoid sending response_format for plain text responses because some Chat Completions
+    // compatible providers (e.g., Claude) reject non-json_schema values here. OpenAI's API
+    // already treats text as the default when the field is omitted.
+    return undefined;
   }
 
   if (outputType.type === 'json_schema') {

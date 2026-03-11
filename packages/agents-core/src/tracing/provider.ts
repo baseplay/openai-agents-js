@@ -86,6 +86,8 @@ export class TraceProvider {
 
     let parentId;
     let traceId;
+    let tracingApiKey: string | undefined;
+    let traceMetadata: Record<string, any> | undefined;
 
     if (!parent) {
       const currentTrace = getCurrentTrace();
@@ -109,6 +111,8 @@ export class TraceProvider {
       }
 
       traceId = currentTrace.traceId;
+      tracingApiKey = currentTrace.tracingApiKey;
+      traceMetadata = currentTrace.metadata;
       if (currentSpan) {
         logger.debug('Using parent span %s', currentSpan.spanId);
         parentId = currentSpan.spanId;
@@ -125,6 +129,8 @@ export class TraceProvider {
       }
 
       traceId = parent.traceId;
+      tracingApiKey = parent.tracingApiKey;
+      traceMetadata = parent.metadata;
     } else if (parent instanceof Span) {
       if (parent instanceof NoopSpan) {
         logger.debug('Parent span is no-op, returning NoopSpan');
@@ -133,6 +139,8 @@ export class TraceProvider {
 
       parentId = parent.spanId;
       traceId = parent.traceId;
+      tracingApiKey = parent.tracingApiKey;
+      traceMetadata = parent.traceMetadata;
     }
 
     if (!traceId) {
@@ -151,6 +159,8 @@ export class TraceProvider {
         ...spanOptions,
         traceId,
         parentId,
+        traceMetadata: traceMetadata ?? spanOptions.traceMetadata,
+        tracingApiKey: tracingApiKey ?? spanOptions.tracingApiKey,
       },
       this.#multiProcessor,
     );
@@ -219,6 +229,8 @@ export class TraceProvider {
   }
 }
 
+let moduleTraceProvider: TraceProvider | undefined;
+
 function hasOtherListenersForSignals(event: 'SIGINT' | 'SIGTERM'): boolean {
   return process.listeners(event).length > 1;
 }
@@ -227,10 +239,62 @@ function hasOtherListenersForEvents(event: 'unhandledRejection'): boolean {
   return process.listeners(event).length > 1;
 }
 
-let GLOBAL_TRACE_PROVIDER: TraceProvider | undefined = undefined;
 export function getGlobalTraceProvider(): TraceProvider {
-  if (!GLOBAL_TRACE_PROVIDER) {
-    GLOBAL_TRACE_PROVIDER = new TraceProvider();
+  const symbol = Symbol.for('openai.agents.core.traceProvider');
+
+  try {
+    const globalHolder = globalThis as unknown as Record<
+      symbol | string,
+      TraceProvider | undefined
+    >;
+
+    // Avoid constructing extra providers when globalThis is frozen/sealed. We
+    // first short-circuit on existing instances, then check writability before
+    // instantiation so hardened runtimes do not leak constructors or listeners.
+    const existing = globalHolder[symbol];
+    if (existing) {
+      return existing;
+    }
+
+    const descriptor = Object.getOwnPropertyDescriptor(globalHolder, symbol);
+    if (
+      descriptor &&
+      descriptor.writable === false &&
+      descriptor.configurable === false &&
+      !descriptor.set
+    ) {
+      return getModuleTraceProvider();
+    }
+
+    if (!descriptor) {
+      try {
+        Object.defineProperty(globalHolder, symbol, {
+          value: undefined,
+          writable: true,
+          configurable: true,
+        });
+      } catch {
+        return getModuleTraceProvider();
+      }
+    }
+
+    try {
+      const provider = new TraceProvider();
+      globalHolder[symbol] = provider;
+      return provider;
+    } catch {
+      return getModuleTraceProvider();
+    }
+  } catch {
+    // Hardened runtimes can freeze or seal globalThis; fall back to a
+    // module-local singleton instead of throwing so tracing still works.
+    return getModuleTraceProvider();
   }
-  return GLOBAL_TRACE_PROVIDER;
+}
+
+function getModuleTraceProvider() {
+  if (!moduleTraceProvider) {
+    moduleTraceProvider = new TraceProvider();
+  }
+  return moduleTraceProvider;
 }

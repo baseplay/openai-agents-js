@@ -4,10 +4,10 @@ import { Agent, run } from '@openai/agents';
 import { openai } from '@ai-sdk/openai';
 
 // Import the adapter
-import { aisdk } from '@openai/agents-extensions';
+import { aisdk } from '@openai/agents-extensions/ai-sdk';
 
 // Create a model instance to be used by the agent
-const model = aisdk(openai('gpt-5-mini'));
+const model = aisdk(openai('gpt-5.4'));
 
 // Create an agent with the model
 const agent = new Agent({

@@ -1,5 +1,361 @@
 # @openai/agents-realtime
 
+## 0.6.0
+
+### Patch Changes
+
+- Updated dependencies [8a5135a]
+- Updated dependencies [b2e5236]
+- Updated dependencies [94c18cd]
+- Updated dependencies [98a62a2]
+- Updated dependencies [559f3d8]
+- Updated dependencies [4e6b3fb]
+- Updated dependencies [ddd97d5]
+  - @openai/agents-core@0.6.0
+
+## 0.5.4
+
+### Patch Changes
+
+- 7ff108b: feat: add custom rejection messages for approval rejects
+- Updated dependencies [7ff108b]
+  - @openai/agents-core@0.5.4
+
+## 0.5.3
+
+### Patch Changes
+
+- b9c0378: perf: speed up tracing and realtime unit tests
+- Updated dependencies [b9c0378]
+- Updated dependencies [e9f701e]
+  - @openai/agents-core@0.5.3
+
+## 0.5.2
+
+### Patch Changes
+
+- Updated dependencies [85cdea4]
+- Updated dependencies [3da9364]
+  - @openai/agents-core@0.5.2
+
+## 0.5.1
+
+### Patch Changes
+
+- 36bb158: fix: sync OpenAI realtime model autocomplete names
+  - @openai/agents-core@0.5.1
+
+## 0.5.0
+
+### Patch Changes
+
+- Updated dependencies [c590057]
+  - @openai/agents-core@0.5.0
+
+## 0.4.15
+
+### Patch Changes
+
+- Updated dependencies [40c1709]
+  - @openai/agents-core@0.4.15
+
+## 0.4.14
+
+### Patch Changes
+
+- Updated dependencies [76a695e]
+  - @openai/agents-core@0.4.14
+
+## 0.4.13
+
+### Patch Changes
+
+- Updated dependencies [cbadc0f]
+- Updated dependencies [5dfe016]
+- Updated dependencies [6698105]
+  - @openai/agents-core@0.4.13
+
+## 0.4.12
+
+### Patch Changes
+
+- e1f1805: fix: #582 prevent duplicate realtime session events after reconnect
+- 9dca060: fix: #551 preserve pre-tool assistant transcript in realtime agent_end events
+- Updated dependencies [2cd336a]
+- Updated dependencies [7a05c7b]
+- Updated dependencies [883a114]
+- Updated dependencies [deb282d]
+  - @openai/agents-core@0.4.12
+
+## 0.4.11
+
+### Patch Changes
+
+- 58e2334: fix: normalize realtime turnDetection modelVersion to model_version
+- Updated dependencies [afed6f7]
+  - @openai/agents-core@0.4.11
+
+## 0.4.10
+
+### Patch Changes
+
+- de6a5f3: feat(core,realtime): add function tool timeouts and trace metadata propagation
+- Updated dependencies [de6a5f3]
+  - @openai/agents-core@0.4.10
+
+## 0.4.9
+
+### Patch Changes
+
+- Updated dependencies [0ca2612]
+  - @openai/agents-core@0.4.9
+
+## 0.4.8
+
+### Patch Changes
+
+- 1228138: fix(agents-realtime): wait for session.updated ack before resolving connect()
+
+  WebRTC `connect()` previously resolved immediately after sending session config, before the server acknowledged it. This caused a race where audio could flow to the server before instructions, tools, and modalities were applied — the server would silently use defaults instead.
+
+  `connect()` now waits for the `session.updated` event from the server before resolving, with a 5-second hard timeout as a safety net. No consumer code changes required.
+
+- Updated dependencies [4bb2dde]
+  - @openai/agents-core@0.4.8
+
+## 0.4.7
+
+### Patch Changes
+
+- Updated dependencies [219a361]
+- Updated dependencies [d3aa44f]
+  - @openai/agents-core@0.4.7
+
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [8a7b58a]
+  - @openai/agents-core@0.4.6
+
+## 0.4.5
+
+### Patch Changes
+
+- 75c92eb: feat: add toolErrorFormatter callback for approval rejection tool outputs
+- Updated dependencies [239bc4f]
+- Updated dependencies [085eebb]
+- Updated dependencies [752d36f]
+- Updated dependencies [bf9a5b4]
+- Updated dependencies [c1fbe95]
+- Updated dependencies [35ab4bd]
+- Updated dependencies [3e20bbd]
+- Updated dependencies [75c92eb]
+  - @openai/agents-core@0.4.5
+
+## 0.4.4
+
+### Patch Changes
+
+- Updated dependencies [14315e3]
+  - @openai/agents-core@0.4.4
+
+## 0.4.3
+
+### Patch Changes
+
+- e28d181: test: fail on unexpected stdout/stderr in Vitest
+- Updated dependencies [657cda6]
+- Updated dependencies [e28d181]
+- Updated dependencies [709fa6f]
+  - @openai/agents-core@0.4.3
+
+## 0.4.2
+
+### Patch Changes
+
+- 605670e: test(realtime,core,extensions): add coverage for approvals, tracing, MCP, and codex helpers
+- Updated dependencies [d76dcfd]
+- Updated dependencies [605670e]
+- Updated dependencies [f1b6f7f]
+- Updated dependencies [7a1fc88]
+- Updated dependencies [3a2bd9e]
+- Updated dependencies [9d10652]
+  - @openai/agents-core@0.4.2
+
+## 0.4.1
+
+### Patch Changes
+
+- 648a461: fix: handle legacy fileId fallback and expand coverage
+- Updated dependencies [60a48d7]
+- Updated dependencies [648a461]
+- Updated dependencies [6cc01be]
+  - @openai/agents-core@0.4.1
+
+## 0.4.0
+
+### Minor Changes
+
+- 2bce164: feat: #561 Drop Zod v3 support and require Zod v4 for schema-based tools and outputs
+
+### Patch Changes
+
+- Updated dependencies [2bce164]
+- Updated dependencies [4feaaae]
+  - @openai/agents-core@0.4.0
+
+## 0.3.9
+
+### Patch Changes
+
+- Updated dependencies [f0ad706]
+  - @openai/agents-core@0.3.9
+
+## 0.3.8
+
+### Patch Changes
+
+- 65880e8: fix(realtime): #820 null values for noise_reduction / transcription / turn_detection are ignored
+- d18eb0b: Add regression tests covering agent scenarios
+- f2ccd93: fix: whitelist realtime session tool payload to documented fields
+- 20cb95f: feat: Add tool input/output guardrails to TS SDK
+- ba4a612: fix: #816 preserve falsy turn detection config values
+- Updated dependencies [3b368cb]
+- Updated dependencies [303e95e]
+- Updated dependencies [d18eb0b]
+- Updated dependencies [5d9b751]
+- Updated dependencies [a0fc1dc]
+- Updated dependencies [da82f9c]
+- Updated dependencies [20cb95f]
+- Updated dependencies [762d98c]
+- Updated dependencies [c8a9c1d]
+- Updated dependencies [e0ba932]
+- Updated dependencies [41c1b89]
+- Updated dependencies [b233ea5]
+  - @openai/agents-core@0.3.8
+
+## 0.3.7
+
+### Patch Changes
+
+- Updated dependencies [af1c6c9]
+  - @openai/agents-core@0.3.7
+
+## 0.3.6
+
+### Patch Changes
+
+- Updated dependencies [af20625]
+- Updated dependencies [e89a54a]
+- Updated dependencies [c536421]
+- Updated dependencies [12d4e44]
+- Updated dependencies [b1ca7c3]
+- Updated dependencies [f7159aa]
+  - @openai/agents-core@0.3.6
+
+## 0.3.5
+
+### Patch Changes
+
+- 1300121: feat(realtime): Add usage field to input audio transcription completed event
+- 2a4a696: feat: #762 Add turnInput (optional) to agent_start event hooks
+- Updated dependencies [2cb61b0]
+- Updated dependencies [2a4a696]
+- Updated dependencies [820fbce]
+- Updated dependencies [970b086]
+- Updated dependencies [dccc9b3]
+- Updated dependencies [378d421]
+- Updated dependencies [bdbc87d]
+- Updated dependencies [dd1a813]
+  - @openai/agents-core@0.3.5
+
+## 0.3.4
+
+### Patch Changes
+
+- Updated dependencies [2e09baf]
+- Updated dependencies [d1d7842]
+- Updated dependencies [c252cb5]
+- Updated dependencies [0345a4c]
+  - @openai/agents-core@0.3.4
+
+## 0.3.3
+
+### Patch Changes
+
+- 46df17d: fix: #523 transcript removal issue when being interrupted
+- d84976a: fix: #675 top-level voice param in realtime session confid does not work
+- Updated dependencies [18fec56]
+- Updated dependencies [b94432b]
+- Updated dependencies [0404173]
+- Updated dependencies [ef0a6d8]
+- Updated dependencies [22865ae]
+  - @openai/agents-core@0.3.3
+
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [184e5d0]
+- Updated dependencies [0a808d2]
+  - @openai/agents-core@0.3.2
+
+## 0.3.1
+
+### Patch Changes
+
+- 2b57c4e: introduce new shell and apply_patch tools
+- Updated dependencies [2b57c4e]
+  - @openai/agents-core@0.3.1
+
+## 0.3.0
+
+### Patch Changes
+
+- 642a79b: fix: #639 Type issue with realtime agent handoffs
+- 4c1192d: fix: #633 fix a bug where tracingDisabled in realtime config does not work
+- 14016fd: feat: #439 add SIP support for realtime agent runner
+- 8c93873: fix: #613 Listen to peerConnection state in `OpenAIRealtimeWebRTC` to detect disconnects
+- Updated dependencies [1a5326f]
+  - @openai/agents-core@0.3.0
+
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [76e5adb]
+  - @openai/agents-core@0.2.1
+
+## 0.2.0
+
+### Minor Changes
+
+- 27915f7: feat: #561 support both zod3 and zod4
+
+### Patch Changes
+
+- Updated dependencies [0e01da0]
+- Updated dependencies [27915f7]
+  - @openai/agents-core@0.2.0
+
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies [3417f25]
+  - @openai/agents-core@0.1.11
+
+## 0.1.10
+
+### Patch Changes
+
+- cad0baa: Resolved typo with usage events
+- Updated dependencies [73ee587]
+- Updated dependencies [e0b46c4]
+- Updated dependencies [3023dc0]
+  - @openai/agents-core@0.1.10
+
 ## 0.1.8
 
 ### Patch Changes
@@ -33,10 +389,8 @@
 ### Patch Changes
 
 - 2dfb4fd: feat: add factory-based Cloudflare support.
-  - Realtime (WebSocket): add `createWebSocket` and `skipOpenEventListeners` options to enable
-    custom socket creation and connection state control for specialized runtimes.
-  - Extensions: add `CloudflareRealtimeTransportLayer`, which performs a `fetch()`-based WebSocket
-    upgrade on Cloudflare/workerd and integrates via the WebSocket factory.
+  - Realtime (WebSocket): add `createWebSocket` and `skipOpenEventListeners` options to enable custom socket creation and connection state control for specialized runtimes.
+  - Extensions: add `CloudflareRealtimeTransportLayer`, which performs a `fetch()`-based WebSocket upgrade on Cloudflare/workerd and integrates via the WebSocket factory.
 
 ## 0.1.4
 
@@ -230,8 +584,7 @@
 
 ### Patch Changes
 
-- 6e2445a: Add `changePeerConnection` option to `OpenAIRealtimeWebRTC` allowing interception
-  and replacement of the created `RTCPeerConnection` before the offer is made.
+- 6e2445a: Add `changePeerConnection` option to `OpenAIRealtimeWebRTC` allowing interception and replacement of the created `RTCPeerConnection` before the offer is made.
 - ca5cf8b: fix(realtime): add zod dependency to package.json
 - Updated dependencies [544ed4b]
   - @openai/agents-core@0.0.5

@@ -21,7 +21,7 @@ const getWeatherTool = tool({
 const client = new OpenAI();
 const agent = new Agent({
   name: 'Assistant',
-  model: new OpenAIChatCompletionsModel(client, 'gpt-4o'),
+  model: new OpenAIChatCompletionsModel(client, 'gpt-5.4'),
   instructions: 'You only respond in haikus.',
   tools: [getWeatherTool],
 });
@@ -34,5 +34,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error('Error:', error);
+  console.error(error);
+  process.exit(1);
 });

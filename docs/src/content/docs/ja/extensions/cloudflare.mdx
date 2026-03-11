@@ -6,14 +6,14 @@ description: Connect your Agents SDK agents from Cloudflare Workers/workerd usin
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers およびその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使った外向きの WebSocket を開くことができません。これらの環境から リアルタイムエージェント に簡単に接続できるよう、extensions パッケージは内部で `fetch()` ベースのアップグレードを行う専用のトランスポートを提供します。
+Cloudflare Workers とその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクタを使用して外向きの WebSockets を開くことはできません。これらの環境から リアルタイムエージェント に簡単に接続できるようにするため、extensions パッケージは `fetch()` ベースのアップグレードを内部で実行する専用のトランスポートを提供します。
 
 <Aside type="caution">
-  このアダプターはまだベータ版です。稀なケースで問題やバグに遭遇する可能性があります。
-  問題があれば [GitHub
+  このアダプターはまだ beta
+  版です。レアケースの問題やバグに遭遇する可能性があります。 問題は [GitHub
   issues](https://github.com/openai/openai-agents-js/issues)
-  に報告してください。迅速に対応します。Workers で Node.js 風 API
-  を利用する場合は、`nodejs_compat` の有効化を検討してください。
+  からご報告ください。迅速に修正します。Workers で Node.js 風の API
+  を利用する場合は、`nodejs_compat` の有効化も検討してください。
 </Aside>
 
 ## セットアップ
@@ -26,11 +26,11 @@ Cloudflare Workers およびその他の workerd ランタイムでは、グロ�
    npm install @openai/agents-extensions
    ```
 
-2. **トランスポートを作成し、セッションにアタッチします。**
+2. **トランスポートを作成し、セッションに紐付けます。**
 
    <Code lang="typescript" code={cloudflareBasicExample} />
 
-3. **`RealtimeSession` を接続します。**
+3. **`RealtimeSession` に接続します。**
 
    ```typescript
    await session.connect({ apiKey: 'your-openai-ephemeral-or-server-key' });
@@ -40,6 +40,6 @@ Cloudflare Workers およびその他の workerd ランタイムでは、グロ�
 
 ## 注意事項
 
-- Cloudflare トランスポートは内部で `Upgrade: websocket` を伴う `fetch()` を使用し、ソケットの `open` イベントを待たずに進みます。workerd の API に合わせた動作です
-- このトランスポート使用時も、すべての `RealtimeSession` 機能（tools、ガードレール など）は通常どおり動作します
-- 開発中の詳細ログ確認には `DEBUG=openai-agents*` を使用します
+- Cloudflare トランスポートは内部的に `Upgrade: websocket` を伴う `fetch()` を使用し、ソケットの `open` イベントを待機しません。workerd の API に合わせた挙動です
+- このトランスポートを使用しても、`RealtimeSession` のすべての機能（ツール、ガードレール など）は通常どおり動作します
+- 開発中の詳細なログ検査には `DEBUG=openai-agents*` を使用します

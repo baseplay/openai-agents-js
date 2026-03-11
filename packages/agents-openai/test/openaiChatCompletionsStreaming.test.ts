@@ -116,7 +116,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
         },
         output: [
           {
-            id: FAKE_ID,
+            id: 'res1',
             role: 'assistant',
             type: 'message',
             status: 'completed',
@@ -130,7 +130,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
             ],
           },
           {
-            id: FAKE_ID,
+            id: 'res1',
             type: 'function_call',
             arguments: '{}',
             name: 'fn',
@@ -138,6 +138,31 @@ describe('convertChatCompletionsStreamToResponses', () => {
           },
         ],
       },
+    });
+
+    expect(response.choices).toEqual([
+      {
+        index: 0,
+        finish_reason: 'tool_calls',
+        logprobs: null,
+        message: {
+          role: 'assistant',
+          content: 'hello',
+          refusal: 'nope',
+          tool_calls: [
+            {
+              id: 'call1',
+              type: 'function',
+              function: { name: 'fn', arguments: '{}' },
+            },
+          ],
+        },
+      },
+    ]);
+    expect(response.usage).toMatchObject({
+      prompt_tokens: 3,
+      completion_tokens: 4,
+      total_tokens: 7,
     });
   });
 });
@@ -179,7 +204,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
       {
-        id: FAKE_ID,
+        id: 'r',
         content: [
           {
             text: 'hello',
@@ -192,7 +217,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
         status: 'completed',
       },
       {
-        id: FAKE_ID,
+        id: 'r',
         type: 'function_call',
         name: 'fn',
         callId: 'call',
@@ -263,6 +288,169 @@ describe('convertChatCompletionsStreamToResponses', () => {
       type: 'reasoning',
       content: [],
       rawContent: [{ type: 'reasoning_text', text: 'foobar' }],
+    });
+  });
+
+  it('strips leading {} from tool call arguments when followed by real args', async () => {
+    const resp = { id: 'r' } as any;
+
+    async function* stream() {
+      yield makeChunk({
+        tool_calls: [
+          { index: 0, id: 'call1', function: { name: 'fn', arguments: '{}' } },
+        ],
+      });
+      yield makeChunk({
+        tool_calls: [{ index: 0, function: { arguments: '{"key":"value"}' } }],
+      });
+    }
+
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const final = events[events.length - 1];
+    const functionCall = final.response.output.find(
+      (o: any) => o.type === 'function_call',
+    );
+    expect(functionCall.arguments).toBe('{"key":"value"}');
+  });
+
+  it('preserves {} for legitimate empty tool call arguments', async () => {
+    const resp = { id: 'r' } as any;
+
+    async function* stream() {
+      yield makeChunk({
+        tool_calls: [
+          { index: 0, id: 'call1', function: { name: 'fn', arguments: '{}' } },
+        ],
+      });
+    }
+
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const final = events[events.length - 1];
+    const functionCall = final.response.output.find(
+      (o: any) => o.type === 'function_call',
+    );
+    expect(functionCall.arguments).toBe('{}');
+  });
+
+  it('aggregates multiple function calls into a single trace choice', async () => {
+    const resp: ChatCompletion = {
+      id: 'r-multi',
+      created: 0,
+      model: 'gpt-test',
+      object: 'chat.completion',
+      choices: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+
+    async function* stream() {
+      yield makeChunk({
+        tool_calls: [
+          {
+            index: 0,
+            id: 'call1',
+            function: { name: 'lookup', arguments: '{"city":' },
+          },
+          {
+            index: 1,
+            id: 'call2',
+            function: { name: 'timezone', arguments: '{"zone":"JST"}' },
+          },
+        ],
+      });
+      yield {
+        ...makeChunk({
+          tool_calls: [{ index: 0, function: { arguments: '"Tokyo"}' } }],
+        }),
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [{ index: 0, function: { arguments: '"Tokyo"}' } }],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      } as any;
+    }
+
+    for await (const _event of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      // Drain all events.
+    }
+
+    expect(resp.choices).toEqual([
+      {
+        index: 0,
+        finish_reason: 'tool_calls',
+        logprobs: null,
+        message: {
+          role: 'assistant',
+          content: null,
+          refusal: null,
+          tool_calls: [
+            {
+              id: 'call1',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{"city":"Tokyo"}' },
+            },
+            {
+              id: 'call2',
+              type: 'function',
+              function: { name: 'timezone', arguments: '{"zone":"JST"}' },
+            },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it('falls back to FAKE_ID when streaming chunks do not include an id', async () => {
+    const resp: ChatCompletion = {
+      id: FAKE_ID,
+      created: 0,
+      model: 'gpt-test',
+      object: 'chat.completion',
+      choices: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+
+    async function* stream() {
+      yield {
+        ...makeChunk({ content: 'hello' }),
+        id: undefined,
+      } as any;
+    }
+
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const final = events[events.length - 1];
+    expect(final.type).toBe('response_done');
+    expect(final.response.id).toBe(FAKE_ID);
+    expect(final.response.output[0]).toMatchObject({
+      id: FAKE_ID,
+      type: 'message',
     });
   });
 });

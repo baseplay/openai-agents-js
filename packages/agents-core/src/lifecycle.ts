@@ -6,7 +6,7 @@ import {
   EventEmitter,
   EventEmitterEvents,
 } from '@openai/agents-core/_shims';
-import { TextOutput, UnknownContext } from './types';
+import { AgentInputItem, TextOutput, UnknownContext } from './types';
 import * as protocol from './types/protocol';
 
 export abstract class EventEmitterDelegate<
@@ -47,9 +47,20 @@ export type AgentHookEvents<
 > = {
   /**
    * @param context - The context of the run
+   * @param agent - The agent that is starting
+   * @param turnInput - The input items for the current turn
    */
-  agent_start: [context: RunContext<TContext>, agent: Agent<TContext, TOutput>];
+  agent_start: [
+    context: RunContext<TContext>,
+    agent: Agent<TContext, TOutput>,
+    turnInput?: AgentInputItem[],
+  ];
   /**
+   * Note that the second argument is not consistent with the run hooks here.
+   * Changing the list is a breaking change, so we don't make changes for it in the short term
+   * If we revisit the argument data structure (e.g., migrating to a single object instead),
+   * more properties could be easily added later on.
+   *
    * @param context - The context of the run
    * @param output - The output of the agent
    */
@@ -105,7 +116,11 @@ export type RunHookEvents<
    * @param context - The context of the run
    * @param agent - The agent that is starting
    */
-  agent_start: [context: RunContext<TContext>, agent: Agent<TContext, TOutput>];
+  agent_start: [
+    context: RunContext<TContext>,
+    agent: Agent<TContext, TOutput>,
+    turnInput?: AgentInputItem[],
+  ];
   /**
    * @param context - The context of the run
    * @param agent - The agent that is ending

@@ -1,5 +1,291 @@
 # @openai/agents-core
 
+## 0.6.0
+
+### Patch Changes
+
+- 8a5135a: fix: #1070 preserve MCP image mimeType in tool outputs
+- b2e5236: fix: rehydrate custom client tool_search runtime tools on RunState resume
+- 94c18cd: fix: fold unreleased run state schema changes into 1.8
+- 98a62a2: test: add coverage for helper edge cases and conversation session branches
+- 559f3d8: fix: allow GA computer tools without display metadata
+- 4e6b3fb: fix: migrate ComputerTool to the GA computer tool
+- ddd97d5: feat: add Responses tool search support
+
+## 0.5.4
+
+### Patch Changes
+
+- 7ff108b: feat: add custom rejection messages for approval rejects
+
+## 0.5.3
+
+### Patch Changes
+
+- b9c0378: perf: speed up tracing and realtime unit tests
+- e9f701e: feat: expose agent tool invocation metadata in custom output extractors
+
+## 0.5.2
+
+### Patch Changes
+
+- 85cdea4: fix: preserve OpenAI Responses request IDs in raw responses
+- 3da9364: fix: include `type` in `buildEnum` fallback schema for enum definitions
+
+  The fallback JSON Schema converter omitted the `type` field from enum schemas, producing `{ enum: [...] }` instead of `{ type: "string", enum: [...] }`. Providers following OpenAPI 3.0 conventions (e.g. Google Gemini) rejected these schemas. The fix infers the type from enum values, matching the behavior of the primary path's vendored zod-to-json-schema parsers.
+
+## 0.5.1
+
+## 0.5.0
+
+### Minor Changes
+
+- c590057: feat: add responses websocket transport and scoped websocket session helper
+
+## 0.4.15
+
+### Patch Changes
+
+- 40c1709: fix(agents-core): respect tracingDisabled for function tool calls
+
+  `buildApprovalRejectionResult` and `runApprovedFunctionTool` called `withFunctionSpan()` directly, bypassing the `tracingDisabled` / `getCurrentTrace()` guard that the existing `withToolFunctionSpan` helper provides. This caused span creation even when `tracingDisabled: true` was set in `RunConfig`, and could trigger "No existing trace found" errors.
+
+  Both functions now use `withToolFunctionSpan`, consistent with `executeShellActions`, `executeApplyPatchOperations`, and `executeComputerActions`.
+
+## 0.4.14
+
+### Patch Changes
+
+- 76a695e: fix: preserve nested agent tool approval agent after run state restore
+
+## 0.4.13
+
+### Patch Changes
+
+- cbadc0f: Fix parallel input guardrail tripwire being preempted by ModelBehaviorError when using structured output in non-streaming run
+- 5dfe016: fix: rehydrate RunState interruptions and type getInterruptions
+- 6698105: fix(agents-core): persist reasoning item ID policy across resumes and clarify filter interaction (enhancing #977)
+
+## 0.4.12
+
+### Patch Changes
+
+- 2cd336a: fix: #116 respect toolChoice none overrides after tool lifecycle updates
+- 7a05c7b: feat: #987 pass run context into applyPatch editor operations
+- 883a114: fix: #302 propagate output guardrail context types to OutputGuardrailFunctionArgs
+- deb282d: fix: #479 avoid Bun browser startup crash when shim modules are temporarily unresolved
+
+## 0.4.11
+
+### Patch Changes
+
+- afed6f7: fix: #972 emit tracing function spans for shell, apply_patch, and computer tools
+
+## 0.4.10
+
+### Patch Changes
+
+- de6a5f3: feat(core,realtime): add function tool timeouts and trace metadata propagation
+
+## 0.4.9
+
+### Patch Changes
+
+- 0ca2612: fix(tracing): expose trace metadata on spans for processors
+
+## 0.4.8
+
+### Patch Changes
+
+- 4bb2dde: fix(tracing): #955 preserve generation usage metadata via usage.details
+
+## 0.4.7
+
+### Patch Changes
+
+- 219a361: fix: preserve ShellTool compatibility while keeping factory environment and hosted polling
+- d3aa44f: feat: support shell tool environment selection for local and container runtimes
+
+## 0.4.6
+
+### Patch Changes
+
+- 8a7b58a: feat: add run-context Codex thread reuse with normalized codex tool naming
+
+## 0.4.5
+
+### Patch Changes
+
+- 239bc4f: feat: #763 add onSafetyCheck hook for computer safety checks
+- 085eebb: feat: #663 add computer tool approvals and run context arg
+- 752d36f: fix: #932 consider traceIncludeSensitiveData option
+- bf9a5b4: fix: include zod descriptions in json schema output
+- c1fbe95: feat: add MCP server errorFunction support
+- 35ab4bd: feat: add MCP tool meta resolver support
+- 3e20bbd: feat: #921 add structured input builders for agent tools
+- 75c92eb: feat: add toolErrorFormatter callback for approval rejection tool outputs
+
+## 0.4.4
+
+### Patch Changes
+
+- 14315e3: fix: #680 resume nested agent tool approvals after interruptions
+
+## 0.4.3
+
+### Patch Changes
+
+- 657cda6: fix(agents-core): #905 detach abort listeners after streaming completion
+- e28d181: test: fail on unexpected stdout/stderr in Vitest
+- 709fa6f: test(agents-core): silence expected MCP server error logs in tests
+
+## 0.4.2
+
+### Patch Changes
+
+- d76dcfd: fix: prefer error handler output for agent tools (ref #896)
+- 605670e: test(realtime,core,extensions): add coverage for approvals, tracing, MCP, and codex helpers
+- f1b6f7f: feat(agents-core): add maxTurns error handlers with runData snapshots
+- 7a1fc88: feat: add MCPServers lifecycle helper
+- 3a2bd9e: feat: add AI SDK data/text stream response adapters for streamed runs
+- 9d10652: fix(agents-core): prefer run tracing config when resuming run state
+
+## 0.4.1
+
+### Patch Changes
+
+- 60a48d7: Default compaction mode to auto and switch to input when store is false.
+- 648a461: fix: handle legacy fileId fallback and expand coverage
+- 6cc01be: fix: #723 handle invalid JSON in tool call arguments gracefully to prevent agent crashes
+
+## 0.4.0
+
+### Minor Changes
+
+- 2bce164: feat: #561 Drop Zod v3 support and require Zod v4 for schema-based tools and outputs
+- 4feaaae: feat(agents-core): update gpt-5.1/5.2 defaults and reasoning effort types
+
+## 0.3.9
+
+### Patch Changes
+
+- f0ad706: fix(agents-core): #670 set subclass error names
+
+## 0.3.8
+
+### Patch Changes
+
+- 3b368cb: fix: #829 Ensure generated declarations are type-checked and expose PreparedInputWithSessionResult
+- 303e95e: feat: Add per-run tracing API key support
+- d18eb0b: Add regression tests covering agent scenarios
+- 5d9b751: fix: #799 Expose raw input and validation error in tool parsing failures
+- a0fc1dc: feat: #794 Expose `ToolInputParameters` and `ToolOptions` from the top-level exports so wrappers can import the tool types
+- da82f9c: fix: sanitize conversation items for non-OpenAI models in HITL flow
+- 20cb95f: feat: Add tool input/output guardrails to TS SDK
+- 762d98c: fix: Refactor run.ts/runImplementation.ts internals
+- c8a9c1d: fix: #709 Share tracing context across runtimes to prevent Deno aisdk context loss
+- e0ba932: fix: opt-in run state enhancement for #813
+- 41c1b89: fix: terminate streamable HTTP MCP sessions safely with typed guard
+- b233ea5: fix: Fix streaming cancellation to abort promptly and resolve completion on cancel
+
+## 0.3.7
+
+### Patch Changes
+
+- af1c6c9: fix: Fix a bug where MCP servers don't use clientSessionTimeoutSeconds (re-fix for #781)
+
+## 0.3.6
+
+### Patch Changes
+
+- af20625: fix: Fix a bug where MCP servers don't use clientSessionTimeoutSeconds
+- e89a54a: fix: Add usage data integration to #760 feature addition
+- c536421: fix: #775 tracing: previousSpan is not correctly set
+- 12d4e44: fix: Enable creating and disposing Computer per request ref: #663
+- b1ca7c3: feat: Literal unions: preserve completions by narrowing string branches
+- f7159aa: feat: Add responses.compact-wired session feature
+
+## 0.3.5
+
+### Patch Changes
+
+- 2cb61b0: feat: Add onStream handler to agents as tools
+- 2a4a696: feat: #762 Add turnInput (optional) to agent_start event hooks
+- 820fbce: feat: track token usage while streaming responses for openai models
+- 970b086: chore(deps): bump @modelcontextprotocol/sdk from 1.12.1 to 1.24.0
+- dccc9b3: fix: #753 Emit agent_tool_end event when function tools throw errors
+- 378d421: fix: #701 prevent duplicate function_call items in session history after resuming from interruption
+- bdbc87d: fix: event data adjustment for #749
+- dd1a813: SpanData types are exported from distribution types for use when writing custom TracingExporters and Tracingprocessors
+
+## 0.3.4
+
+### Patch Changes
+
+- 2e09baf: fix: #699 Forward fetch parameter to SSEClientTransport in MCPServerSSE
+- d1d7842: feat: Add ToolOptions to agents-core package export
+- c252cb5: feat: #713 Access tool call items in an output guardrail
+- 0345a4c: feat: #695 Customizable MCP list tool caching
+
+## 0.3.3
+
+### Patch Changes
+
+- 18fec56: feat: #679 Add runInParallel option to input guardrail initialization
+- b94432b: fix: #683 Failing to run MCP servers when deserializing run state data
+- 0404173: fix: #316 developer-friendly message for output type errors
+- ef0a6d8: feat: Add prompt_cache_retention option to ModelSettings
+- 22865ae: feat: #678 Add a list of per-request usage data to Usage
+
+## 0.3.2
+
+### Patch Changes
+
+- 184e5d0: feat: Add reasoning.effort: none parameter for gpt-5.1
+- 0a808d2: fix: Omit tools parameter when prompt ID is set but tools in the agent is absent
+
+## 0.3.1
+
+### Patch Changes
+
+- 2b57c4e: introduce new shell and apply_patch tools
+
+## 0.3.0
+
+### Minor Changes
+
+- 1a5326f: feat: fix #272 add memory feature
+
+## 0.2.1
+
+### Patch Changes
+
+- 76e5adb: fix: ugprade openai package from v5 to v6
+
+## 0.2.0
+
+### Minor Changes
+
+- 0e01da0: feat: #313 Enable tools to return image/file data to an Agent
+- 27915f7: feat: #561 support both zod3 and zod4
+
+## 0.1.11
+
+### Patch Changes
+
+- 3417f25: fix: #597 hostedMcpTool fails to send authorization parameter to Responses API
+
+## 0.1.10
+
+### Patch Changes
+
+- 73ee587: fix: #563 enable explicit model override for prompt
+- e0b46c4: fix: improve the compatibility for conversationId / previousResponseId + tool calls
+
+  ref: https://github.com/openai/openai-agents-python/pull/1827
+
+- 3023dc0: Fixes a bug where `onTraceEnd` was called immediately after `onTraceStart` when streaming is enabled
+
 ## 0.1.8
 
 ### Patch Changes

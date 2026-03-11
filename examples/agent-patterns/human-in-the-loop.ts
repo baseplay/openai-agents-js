@@ -52,7 +52,13 @@ const agent = new Agent({
   ],
 });
 
+const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
+
 async function confirm(question: string) {
+  if (AUTO_APPROVE_HITL) {
+    console.log(`[auto-approve] ${question}`);
+    return true;
+  }
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -86,7 +92,7 @@ async function main() {
 
     for (const interruption of result.interruptions) {
       const confirmed = await confirm(
-        `Agent ${interruption.agent.name} would like to use the tool ${interruption.rawItem.name} with "${interruption.rawItem.arguments}". Do you approve?`,
+        `Agent ${interruption.agent.name} would like to use the tool ${interruption.name} with "${interruption.arguments || 'no arguments'}". Do you approve?`,
       );
 
       if (confirmed) {
@@ -105,5 +111,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.dir(error, { depth: null });
+  console.error(error);
+  process.exit(1);
 });

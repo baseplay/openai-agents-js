@@ -4,10 +4,17 @@ import {
   SystemMessageItem,
   HostedToolCallItem,
   FunctionCallItem,
+  ToolSearchCallItem,
+  ToolSearchOutputItem,
   ComputerUseCallItem,
+  ShellCallItem,
   FunctionCallResultItem,
   ComputerCallResultItem,
+  ShellCallResultItem,
+  ApplyPatchCallItem,
+  ApplyPatchCallResultItem,
   ReasoningItem,
+  CompactionItem,
   UnknownItem,
 } from './protocol';
 
@@ -28,12 +35,19 @@ export type AgentOutputItem =
   | UserMessageItem
   | AssistantMessageItem
   | SystemMessageItem
+  | ToolSearchCallItem
+  | ToolSearchOutputItem
   | HostedToolCallItem
   | FunctionCallItem
   | ComputerUseCallItem
+  | ShellCallItem
+  | ApplyPatchCallItem
   | FunctionCallResultItem
   | ComputerCallResultItem
+  | ShellCallResultItem
+  | ApplyPatchCallResultItem
   | ReasoningItem
+  | CompactionItem
   | UnknownItem;
 
 /**
@@ -43,10 +57,17 @@ export type AgentInputItem =
   | UserMessageItem
   | AssistantMessageItem
   | SystemMessageItem
+  | ToolSearchCallItem
+  | ToolSearchOutputItem
   | HostedToolCallItem
   | FunctionCallItem
   | ComputerUseCallItem
+  | ShellCallItem
+  | ApplyPatchCallItem
   | FunctionCallResultItem
   | ComputerCallResultItem
+  | ShellCallResultItem
+  | ApplyPatchCallResultItem
   | ReasoningItem
+  | CompactionItem
   | UnknownItem;

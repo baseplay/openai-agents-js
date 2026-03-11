@@ -3,7 +3,7 @@ import { Agent, run, webSearchTool, withTrace } from '@openai/agents';
 async function main() {
   const agent = new Agent({
     name: 'OAI website searcher',
-    model: 'gpt-5-nano',
+    model: 'gpt-5.4',
     instructions:
       'You are a helpful agent that can search openai.com resources.',
     tools: [
@@ -55,4 +55,7 @@ async function main() {
   });
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

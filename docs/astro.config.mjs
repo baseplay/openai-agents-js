@@ -111,6 +111,15 @@ const sidebar = [
     },
   },
   {
+    label: 'Configuration',
+    link: '/guides/config',
+    translations: {
+      ja: 'SDK の設定',
+      zh: 'SDK 配置',
+      ko: 'SDK 설정',
+    },
+  },
+  {
     label: 'Guides',
     translations: {
       ja: 'ガイド',
@@ -128,21 +137,12 @@ const sidebar = [
         },
       },
       {
-        label: 'Running Agents',
-        link: '/guides/running-agents',
+        label: 'Models',
+        link: '/guides/models',
         translations: {
-          ja: 'エージェントの実行',
-          zh: '运行智能体',
-          ko: '에이전트 실행',
-        },
-      },
-      {
-        label: 'Results',
-        link: '/guides/results',
-        translations: {
-          ja: 'エージェントの実行結果',
-          zh: '执行结果',
-          ko: '실행 결과',
+          ja: 'モデル',
+          zh: '模型',
+          ko: '모델',
         },
       },
       {
@@ -155,48 +155,21 @@ const sidebar = [
         },
       },
       {
-        label: 'Orchestrating multiple agents',
-        link: '/guides/multi-agent',
-        translations: {
-          ja: 'マルチエージェント',
-          zh: '多智能体编排',
-          ko: '멀티 에이전트 오케스트레이션',
-        },
-      },
-      {
-        label: 'Handoffs',
-        link: '/guides/handoffs',
-        translations: {
-          ja: 'ハンドオフ',
-          zh: '交接',
-          ko: '핸드오프',
-        },
-      },
-      {
-        label: 'Context management',
-        link: '/guides/context',
-        translations: {
-          ja: 'コンテキスト管理',
-          zh: '上下文管理',
-          ko: '컨텍스트 관리',
-        },
-      },
-      {
-        label: 'Models',
-        link: '/guides/models',
-        translations: {
-          ja: 'モデル',
-          zh: '模型',
-          ko: '모델',
-        },
-      },
-      {
         label: 'Guardrails',
         link: '/guides/guardrails',
         translations: {
           ja: 'ガードレール',
           zh: '护栏',
           ko: '가드레일',
+        },
+      },
+      {
+        label: 'Running Agents',
+        link: '/guides/running-agents',
+        translations: {
+          ja: 'エージェントの実行',
+          zh: '运行智能体',
+          ko: '에이전트 실행',
         },
       },
       {
@@ -209,12 +182,57 @@ const sidebar = [
         },
       },
       {
+        label: 'Agent Orchestration',
+        link: '/guides/multi-agent',
+        translations: {
+          ja: 'エージェントオーケストレーション',
+          zh: '智能体编排',
+          ko: '에이전트 오케스트레이션',
+        },
+      },
+      {
+        label: 'Handoffs',
+        link: '/guides/handoffs',
+        translations: {
+          ja: 'ハンドオフ',
+          zh: '交接',
+          ko: '핸드오프',
+        },
+      },
+      {
+        label: 'Results',
+        link: '/guides/results',
+        translations: {
+          ja: 'エージェントの実行結果',
+          zh: '执行结果',
+          ko: '실행 결과',
+        },
+      },
+      {
         label: 'Human-in-the-loop',
         link: '/guides/human-in-the-loop',
         translations: {
           ja: '人間の介入（HITL）',
           zh: '人机协作',
           ko: '휴먼 인 더 루프 (HITL)',
+        },
+      },
+      {
+        label: 'Sessions',
+        link: '/guides/sessions',
+        translations: {
+          ja: 'セッション',
+          zh: '会话',
+          ko: '세션',
+        },
+      },
+      {
+        label: 'Context Management',
+        link: '/guides/context',
+        translations: {
+          ja: 'コンテキスト管理',
+          zh: '上下文管理',
+          ko: '컨텍스트 관리',
         },
       },
       {
@@ -233,33 +251,6 @@ const sidebar = [
           ja: 'トレーシング',
           zh: '追踪',
           ko: '트레이싱',
-        },
-      },
-      {
-        label: 'Configuring the SDK',
-        link: '/guides/config',
-        translations: {
-          ja: 'SDK の設定',
-          zh: 'SDK 配置',
-          ko: 'SDK 설정',
-        },
-      },
-      {
-        label: 'Troubleshooting',
-        link: '/guides/troubleshooting',
-        translations: {
-          ja: 'トラブルシューティング',
-          zh: '故障排除',
-          ko: '문제 해결',
-        },
-      },
-      {
-        label: 'Release process',
-        link: '/guides/release',
-        translations: {
-          ja: 'リリースプロセス',
-          zh: '发布流程',
-          ko: '릴리스 프로세스',
         },
       },
     ],
@@ -319,33 +310,42 @@ const sidebar = [
     },
     items: [
       {
-        label: 'Use any model with the AI SDK',
+        label: 'AI SDK Integration',
         link: '/extensions/ai-sdk',
         translations: {
-          ja: 'AI SDK で任意モデルを指定',
-          zh: '使用 AI SDK 指定任意模型',
-          ko: 'AI SDK로 어떤 모델이든 사용',
+          ja: 'AI SDK 連携',
+          zh: 'AI SDK 集成',
+          ko: 'AI SDK 연동',
         },
       },
       {
-        label: 'Connect Realtime Agents to Twilio',
+        label: 'Realtime Agents on Twilio',
         link: '/extensions/twilio',
         translations: {
-          ja: 'Realtime Agent を Twilio に接続',
-          zh: '将实时智能体连接到 Twilio',
-          ko: 'Realtime 에이전트를 Twilio에 연결',
+          ja: 'Twilio 上の Realtime Agent',
+          zh: 'Twilio 上的实时智能体',
+          ko: 'Twilio용 Realtime 에이전트',
         },
       },
       {
-        label: 'Cloudflare Workers Transport',
+        label: 'Realtime Agents on Cloudflare',
         link: '/extensions/cloudflare',
         translations: {
-          ja: 'Cloudflare Workers 用トランスポート',
-          zh: 'Cloudflare Workers 传输',
-          ko: 'Cloudflare Workers 전송',
+          ja: 'Cloudflare 上の Realtime Agent',
+          zh: 'Cloudflare 上的实时智能体',
+          ko: 'Cloudflare용 Realtime 에이전트',
         },
       },
     ],
+  },
+  {
+    label: 'Troubleshooting',
+    link: '/guides/troubleshooting',
+    translations: {
+      ja: 'トラブルシューティング',
+      zh: '故障排除',
+      ko: '문제 해결',
+    },
   },
   {
     label: 'API Reference',
@@ -387,6 +387,15 @@ const sidebar = [
         items: [extensionsTypeDocSidebarGroup],
       },
     ],
+  },
+  {
+    label: 'Maintainers: release process',
+    link: '/guides/release',
+    translations: {
+      ja: 'リリースプロセス',
+      zh: '发布流程',
+      ko: '릴리스 프로세스',
+    },
   },
 ];
 
@@ -445,5 +454,12 @@ export default defineConfig({
 
   vite: {
     plugins: [tailwindcss()],
+    // Starlight still targets Zod v3; alias to the bundled v3 compatibility
+    // build to keep its runtime schemas working after the repo-wide Zod v4 upgrade.
+    resolve: {
+      alias: {
+        zod: 'zod/v3',
+      },
+    },
   },
 });

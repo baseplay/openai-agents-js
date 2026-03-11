@@ -81,6 +81,7 @@ export type RealtimeTurnDetectionConfigAsIs = {
   silence_duration_ms?: number;
   threshold?: number;
   idle_timeout_ms?: number;
+  model_version?: string;
 };
 
 // The Realtime API accepts snake_cased keys, so when using this, this SDK converts the keys to snake_case ones before passing it to the API.
@@ -93,6 +94,7 @@ export type RealtimeTurnDetectionConfigCamelCase = {
   silenceDurationMs?: number;
   threshold?: number;
   idleTimeoutMs?: number;
+  modelVersion?: string;
 };
 
 export type RealtimeTurnDetectionConfig = (
@@ -104,8 +106,8 @@ export type RealtimeTurnDetectionConfig = (
 export type RealtimeAudioInputConfig = {
   format?: RealtimeAudioFormat;
   noiseReduction?: RealtimeInputAudioNoiseReductionConfig | null;
-  transcription?: RealtimeInputAudioTranscriptionConfig;
-  turnDetection?: RealtimeTurnDetectionConfig;
+  transcription?: RealtimeInputAudioTranscriptionConfig | null;
+  turnDetection?: RealtimeTurnDetectionConfig | null;
 };
 
 export type RealtimeAudioOutputConfig = {

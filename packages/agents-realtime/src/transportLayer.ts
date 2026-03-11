@@ -36,6 +36,11 @@ export type RealtimeTransportLayerConnectOptions = {
   url?: string;
 
   /**
+   * The call ID to attach to instead of starting a new session.
+   */
+  callId?: string;
+
+  /**
    * The initial session config to use for the session.
    */
   initialSessionConfig?: Partial<RealtimeSessionConfig>;
@@ -131,7 +136,8 @@ export interface RealtimeTransportLayer
 
   /**
    * Resets the conversation history / context to a specific state
-   * @param history - The history to reset to
+   * @param oldHistory - The history that is currently stored on the session.
+   * @param newHistory - The history you want the session to use going forward.
    */
   resetHistory(oldHistory: RealtimeItem[], newHistory: RealtimeItem[]): void;
 
@@ -139,9 +145,11 @@ export interface RealtimeTransportLayer
    * Sends a response for an MCP tool call
    * @param approvalRequest - The approval request to respond to
    * @param approved - Whether the tool call was approved or rejected
+   * @param reason - Optional rejection text for the provider/model.
    */
   sendMcpResponse(
     approvalRequest: RealtimeMcpCallApprovalRequestItem,
     approved: boolean,
+    reason?: string,
   ): void;
 }

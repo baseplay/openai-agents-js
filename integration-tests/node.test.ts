@@ -1,10 +1,16 @@
 import { describe, test, expect, beforeAll } from 'vitest';
 import { execa as execaBase } from 'execa';
 
+const {
+  CODEX_CI: _codexCi,
+  CODEX_THREAD_ID: _codexThreadId,
+  ...integrationEnv
+} = process.env;
+
 const execa = execaBase({
   cwd: './integration-tests/node',
   env: {
-    ...process.env,
+    ...integrationEnv,
     NODE_OPTIONS: '',
     TS_NODE_PROJECT: '',
     TS_NODE_COMPILER_OPTIONS: '',
@@ -25,8 +31,22 @@ describe('Node.js', () => {
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
 
-  test('should be able to run using ESM', async () => {
+  test('should be able to run using ESM', { timeout: 15000 }, async () => {
     const { stdout } = await execa`npm run start:esm`;
     expect(stdout).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
+
+  test('aisdk runner should not lose tracing context', async () => {
+    const { stdout } = await execa`npm run start:aisdk:cjs`;
+    expect(stdout).toContain('[AISDK_RESPONSE]hello[/AISDK_RESPONSE]');
+  });
+
+  test(
+    'codex runner should not lose tracing context',
+    { timeout: 120_000 },
+    async () => {
+      const { stdout } = await execa`npm run start:codex`;
+      expect(stdout).toContain('[CODEX_RESPONSE]');
+    },
+  );
 });

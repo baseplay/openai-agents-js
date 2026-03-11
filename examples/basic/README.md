@@ -1,7 +1,6 @@
 # Basic Examples
 
-This directory contains small scripts that demonstrate features of the Agents SDK.
-Run them with `pnpm` using the commands shown below.
+This directory contains small scripts that demonstrate features of the Agents SDK. Run them with `pnpm` using the commands shown below.
 
 - `hello-world.ts` – Basic agent that responds in haiku.
   ```bash
@@ -19,6 +18,10 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm -F basic start:stream-items
   ```
+- `stream-ws.ts` – Responses WebSocket streaming with tools, HITL approval, and `previousResponseId`.
+  ```bash
+  pnpm -F basic start:stream-ws
+  ```
 - `dynamic-system-prompt.ts` – Instructions picked dynamically per run.
   ```bash
   pnpm -F basic start:dynamic-system-prompt
@@ -35,12 +38,19 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm -F basic start:local-image
   ```
+- `image-tool-output.ts` – Return an image from a tool and let the agent describe it.
+  ```bash
+  pnpm -F basic start:image-tool-output
+  ```
+- `file-tool-output.ts` – Return a file from a tool and have the agent summarize it.
+  ```bash
+  pnpm -F basic start:file-tool-output
+  ```
 - `remote-image.ts` – Send an image URL to the agent.
   ```bash
   pnpm -F basic start:remote-image
   ```
-- `previous-response-id.ts` – Continue a conversation using
-  `previousResponseId`.
+- `previous-response-id.ts` – Continue a conversation using `previousResponseId`.
   ```bash
   pnpm -F basic start:previous-response-id
   ```

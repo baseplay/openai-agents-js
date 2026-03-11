@@ -16,11 +16,33 @@ import {
 } from '@openai/agents-core/_shims';
 import { ReadableStream } from './shims/interface';
 import { RunStreamEvent } from './events';
-import { getTurnInput } from './run';
+import { getTurnInput } from './runner/items';
 import { RunState } from './runState';
+import { RunContext } from './runContext';
+import type { AgentToolInvocation } from './agentToolInvocation';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
 import logger from './logger';
 import { StreamEventTextStream } from './types/protocol';
+import type {
+  ToolInputGuardrailResult,
+  ToolOutputGuardrailResult,
+} from './toolGuardrail';
+import { combineAbortSignalsWithOptions } from './utils/abortSignals';
+
+type AbortHandlerRef<T extends object> = {
+  current?: T;
+};
+
+function createAbortHandlerRef(): {
+  ref: AbortHandlerRef<() => void>;
+  handler: () => void;
+} {
+  const ref: AbortHandlerRef<() => void> = {};
+  const handler = () => {
+    ref.current?.();
+  };
+  return { ref, handler };
+}
 
 /**
  * Data returned by the run() method of an agent.
@@ -67,6 +89,16 @@ export interface RunResultData<
   outputGuardrailResults: OutputGuardrailResult[];
 
   /**
+   * Guardrail results for tool inputs during the run.
+   */
+  toolInputGuardrailResults: ToolInputGuardrailResult[];
+
+  /**
+   * Guardrail results for tool outputs during the run.
+   */
+  toolOutputGuardrailResults: ToolOutputGuardrailResult[];
+
+  /**
    * The output of the last agent, or any handoff agent.
    */
   finalOutput?:
@@ -82,6 +114,16 @@ export interface RunResultData<
    * The state of the run.
    */
   state: RunState<any, TAgent>;
+
+  /**
+   * The public run context for this run.
+   */
+  runContext: RunContext<any>;
+
+  /**
+   * Metadata about the nested `Agent.asTool()` invocation that produced this result, when applicable.
+   */
+  agentToolInvocation?: AgentToolInvocation;
 }
 
 class RunResultBase<TContext, TAgent extends Agent<TContext, any>>
@@ -100,7 +142,11 @@ class RunResultBase<TContext, TAgent extends Agent<TContext, any>>
    * This can be used as inputs for the next agent run.
    */
   get history(): AgentInputItem[] {
-    return getTurnInput(this.input, this.newItems);
+    return getTurnInput(
+      this.input,
+      this.newItems,
+      this.state._reasoningItemIdPolicy,
+    );
   }
 
   /**
@@ -112,7 +158,7 @@ class RunResultBase<TContext, TAgent extends Agent<TContext, any>>
    * For the output including the agents, use the `newItems` property.
    */
   get output(): AgentOutputItem[] {
-    return getTurnInput([], this.newItems);
+    return getTurnInput([], this.newItems, this.state._reasoningItemIdPolicy);
   }
 
   /**
@@ -120,6 +166,20 @@ class RunResultBase<TContext, TAgent extends Agent<TContext, any>>
    */
   get input(): string | AgentInputItem[] {
     return this.state._originalInput;
+  }
+
+  /**
+   * The public run context for this run.
+   */
+  get runContext(): RunContext<TContext> {
+    return this.state._context;
+  }
+
+  /**
+   * Metadata about the nested `Agent.asTool()` invocation that produced this result, when applicable.
+   */
+  get agentToolInvocation(): AgentToolInvocation | undefined {
+    return this.state._agentToolInvocation;
   }
 
   /**
@@ -156,6 +216,14 @@ class RunResultBase<TContext, TAgent extends Agent<TContext, any>>
   }
 
   /**
+   * The agent that should handle the next turn.
+   * This is an alias for the last agent that completed a turn.
+   */
+  get activeAgent(): TAgent | undefined {
+    return this.lastAgent;
+  }
+
+  /**
    * Guardrail results for the input messages.
    */
   get inputGuardrailResults(): InputGuardrailResult[] {
@@ -167,6 +235,20 @@ class RunResultBase<TContext, TAgent extends Agent<TContext, any>>
    */
   get outputGuardrailResults(): OutputGuardrailResult[] {
     return this.state._outputGuardrailResults;
+  }
+
+  /**
+   * Guardrail results for tool inputs.
+   */
+  get toolInputGuardrailResults(): ToolInputGuardrailResult[] {
+    return this.state._toolInputGuardrailResults;
+  }
+
+  /**
+   * Guardrail results for tool outputs.
+   */
+  get toolOutputGuardrailResults(): ToolOutputGuardrailResult[] {
+    return this.state._toolOutputGuardrailResults;
   }
 
   /**
@@ -236,13 +318,19 @@ export class StreamedRunResult<
   public maxTurns: number | undefined;
 
   #error: unknown = null;
-  #signal?: AbortSignal;
+  #combinedSignal?: AbortSignal;
+  #abortSignalSnapshot?: AbortSignal;
+  #abortController: AbortController;
   #readableController: ReadableStreamController<RunStreamEvent> | undefined;
   #readableStream: _ReadableStream<RunStreamEvent>;
   #completedPromise: Promise<void>;
   #completedPromiseResolve: (() => void) | undefined;
   #completedPromiseReject: ((err: unknown) => void) | undefined;
   #cancelled: boolean = false;
+  #streamLoopPromise: Promise<void> | undefined;
+  #abortHandler: (() => void) | undefined;
+  #abortHandlerRef: AbortHandlerRef<() => void> | undefined;
+  #combinedSignalCleanup: () => void = () => {};
 
   constructor(
     result: {
@@ -252,14 +340,28 @@ export class StreamedRunResult<
   ) {
     super(result.state);
 
-    this.#signal = result.signal;
+    this.#abortController = new AbortController();
+    const { signal: combinedSignal, cleanup: cleanupCombinedSignal } =
+      combineAbortSignalsWithOptions(
+        [result.signal, this.#abortController.signal],
+        {
+          onAbortSignalAnyError: (error) => {
+            logger.debug(`AbortSignal.any failed, falling back: ${error}`);
+          },
+        },
+      );
+    this.#combinedSignal = combinedSignal;
+    this.#combinedSignalCleanup = cleanupCombinedSignal;
+    this.#abortSignalSnapshot = combinedSignal;
 
     this.#readableStream = new _ReadableStream<RunStreamEvent>({
       start: (controller) => {
         this.#readableController = controller;
       },
       cancel: () => {
-        this.#cancelled = true;
+        if (!this.#abortController.signal.aborted) {
+          this.#abortController.abort();
+        }
       },
     });
 
@@ -268,40 +370,21 @@ export class StreamedRunResult<
       this.#completedPromiseReject = reject;
     });
 
-    if (this.#signal) {
-      const handleAbort = () => {
-        if (this.#cancelled) {
-          return;
-        }
-
-        this.#cancelled = true;
-
-        const controller = this.#readableController;
-        this.#readableController = undefined;
-
-        if (this.#readableStream.locked) {
-          if (controller) {
-            try {
-              controller.close();
-            } catch (err) {
-              logger.debug(`Failed to close readable stream on abort: ${err}`);
-            }
-          }
-        } else {
-          void this.#readableStream
-            .cancel(this.#signal?.reason)
-            .catch((err) => {
-              logger.debug(`Failed to cancel readable stream on abort: ${err}`);
-            });
-        }
-
-        this.#completedPromiseResolve?.();
+    if (this.#combinedSignal) {
+      // Create the handler outside this scope so it cannot capture the run via lexical this.
+      const { ref: abortRef, handler: handleAbort } = createAbortHandlerRef();
+      abortRef.current = () => {
+        this.#handleAbort();
       };
+      this.#abortHandler = handleAbort;
+      this.#abortHandlerRef = abortRef;
 
-      if (this.#signal.aborted) {
+      if (this.#combinedSignal.aborted) {
         handleAbort();
       } else {
-        this.#signal.addEventListener('abort', handleAbort, { once: true });
+        this.#combinedSignal.addEventListener('abort', handleAbort, {
+          once: true,
+        });
       }
     }
   }
@@ -326,6 +409,7 @@ export class StreamedRunResult<
       this.#readableController = undefined;
       this.#completedPromiseResolve?.();
     }
+    this.#detachAbortHandler();
   }
 
   /**
@@ -342,6 +426,7 @@ export class StreamedRunResult<
     this.#completedPromise.catch((e) => {
       logger.debug(`Resulted in an error: ${e}`);
     });
+    this.#detachAbortHandler();
   }
 
   /**
@@ -377,9 +462,9 @@ export class StreamedRunResult<
   /**
    * Returns a readable stream of the final text output of the agent run.
    *
-   * @param options - Options for the stream.
-   * @param options.compatibleWithNodeStreams - Whether to use Node.js streams or web standard streams.
    * @returns A readable stream of the final output of the agent run.
+   * @remarks Pass `{ compatibleWithNodeStreams: true }` to receive a Node.js compatible stream
+   * instance.
    */
   toTextStream(): ReadableStream<string>;
   toTextStream(options?: { compatibleWithNodeStreams: true }): Readable;
@@ -412,5 +497,76 @@ export class StreamedRunResult<
 
   [Symbol.asyncIterator](): AsyncIterator<RunStreamEvent> {
     return this.#readableStream[Symbol.asyncIterator]();
+  }
+
+  /**
+   * @internal
+   * Sets the stream loop promise that completes when the internal stream loop finishes.
+   * This is used to defer trace end until all agent work is complete.
+   */
+  _setStreamLoopPromise(promise: Promise<void>) {
+    this.#streamLoopPromise = promise;
+  }
+
+  /**
+   * @internal
+   * Returns a promise that resolves when the stream loop completes.
+   * This is used by the tracing system to wait for all agent work before ending the trace.
+   */
+  _getStreamLoopPromise(): Promise<void> | undefined {
+    return this.#streamLoopPromise;
+  }
+
+  /**
+   * @internal
+   * Returns the abort signal that should be used to cancel the streaming run.
+   */
+  _getAbortSignal(): AbortSignal | undefined {
+    return this.#abortSignalSnapshot ?? this.#combinedSignal;
+  }
+
+  #handleAbort() {
+    if (this.#cancelled) {
+      this.#detachAbortHandler();
+      return;
+    }
+
+    this.#cancelled = true;
+
+    const controller = this.#readableController;
+    this.#readableController = undefined;
+
+    if (controller) {
+      try {
+        controller.close();
+      } catch (err) {
+        logger.debug(`Failed to close readable stream on abort: ${err}`);
+      }
+    }
+
+    this.#completedPromiseResolve?.();
+    this.#detachAbortHandler();
+  }
+
+  #detachAbortHandler() {
+    // Clear the indirection first so a retained signal cannot keep this run alive.
+    if (this.#abortHandlerRef) {
+      this.#abortHandlerRef.current = undefined;
+    }
+    if (this.#combinedSignal && this.#abortHandler) {
+      try {
+        this.#combinedSignal.removeEventListener('abort', this.#abortHandler);
+      } catch (err) {
+        logger.debug(`Failed to remove abort listener: ${err}`);
+      }
+    }
+    try {
+      this.#combinedSignalCleanup();
+    } catch (err) {
+      logger.debug(`Failed to clean up combined abort listeners: ${err}`);
+    }
+    this.#combinedSignalCleanup = () => {};
+    this.#abortHandler = undefined;
+    this.#abortHandlerRef = undefined;
   }
 }

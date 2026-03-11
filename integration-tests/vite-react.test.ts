@@ -1,12 +1,26 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { chromium } from 'playwright';
 import { execa as execaBase, ResultPromise } from 'execa';
+import path from 'node:path';
+
+import {
+  assertPathExists,
+  requireEnvVar,
+  withManagedFile,
+} from './_helpers/prereqs';
 
 const execa = execaBase({
   cwd: './integration-tests/vite-react',
 });
 
 let server: ResultPromise;
+const envPath = path.join(
+  process.cwd(),
+  'integration-tests',
+  'vite-react',
+  '.env',
+);
+let cleanupEnvFile: (() => Promise<void>) | undefined;
 
 describe('Vite React', () => {
   beforeAll(async () => {
@@ -16,10 +30,25 @@ describe('Vite React', () => {
     await execa`rm -rf node_modules`;
     console.log('[vite-react] Installing dependencies');
     await execa`npm install`;
+
+    const apiKey = requireEnvVar(
+      'OPENAI_API_KEY',
+      'the Vite React integration test',
+    );
+    cleanupEnvFile = await withManagedFile(
+      envPath,
+      `VITE_OPENAI_API_KEY=${apiKey}\n`,
+    );
+    await assertPathExists(
+      chromium.executablePath(),
+      'Playwright Chromium is not installed. Run `pnpm exec playwright install` before running the Vite React integration test.',
+    );
+
     console.log('[vite-react] Building');
     await execa`npm run build`;
     console.log('[vite-react] Starting server');
     server = execa`npm run preview -- --port 9999`;
+    server.catch(() => {});
     await new Promise((resolve) => {
       server.stdout?.on('data', (data) => {
         if (data.toString().includes('http://localhost')) {
@@ -41,6 +70,7 @@ describe('Vite React', () => {
     const root = await page.$('#root');
     const span = await root?.waitForSelector('span[data-testid="response"]', {
       state: 'attached',
+      timeout: 60000,
     });
     expect(await span?.textContent()).toBe('[RESPONSE]Hello there![/RESPONSE]');
     await browser.close();
@@ -49,6 +79,9 @@ describe('Vite React', () => {
   afterAll(async () => {
     if (server) {
       server.kill();
+    }
+    if (cleanupEnvFile) {
+      await cleanupEnvFile();
     }
   });
 });

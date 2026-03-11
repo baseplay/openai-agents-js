@@ -7,59 +7,95 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import humanInTheLoopExample from '../../../../../../examples/docs/human-in-the-loop/index.ts?raw';
 import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
 
-このガイドでは、SDK に組み込まれた Human in the loop（人間の介入）サポートを使い、人的な介入に基づいてエージェントの実行を一時停止・再開する方法を説明します。
+このガイドでは、 SDK の承認ベースの human-in-the-loop フローを扱います。ツール呼び出しに承認が必要な場合、 SDK は実行を一時停止し、 `interruptions` を返し、同じ `RunState` から後で再開できます。
 
-現在の主なユースケースは、機微なツール実行に対する承認の取得です。
+この承認サーフェスは実行全体に適用され、現在のトップレベルエージェントに限定されません。同じパターンは、ツールが現在のエージェントに属する場合、ハンドオフで到達したエージェントに属する場合、またはネストした `agent.asTool()` 実行に属する場合にも適用されます。ネストした `agent.asTool()` の場合でも、割り込みは外側の実行に現れるため、外側の `result.state` で承認または拒否し、元のルート実行を再開します。
 
-## 承認リクエスト
+`agent.asTool()` では、承認は 2 つの異なるレイヤーで発生することがあります。エージェントツール自体が `asTool({ needsApproval })` により承認を要求でき、さらにネストした実行開始後に、そのネスト先エージェント内のツールが独自の承認を要求する場合があります。どちらも同じ外側実行の割り込みフローで処理されます。
 
-`needsApproval` オプションを `true`、または boolean を返す非同期関数に設定することで、承認が必要なツールを定義できます。
+このページは、 `interruptions` を使う手動承認フローに焦点を当てます。アプリがコードで判定できる場合、一部のツールタイプではプログラムによる承認コールバックもサポートされ、実行を一時停止せずに継続できます。`agent.asTool()` 自体を設定している場合は、[ツールガイド](/openai-agents-js/guides/tools#4-agents-as-tools)を参照してください。このページでは、その実行階層内のいずれかのツールが承認を必要とした後の動作を扱います。
+
+## 承認フロー
+
+`needsApproval` オプションを `true` に設定するか、 boolean を返す非同期関数に設定することで、承認が必要なツールを定義できます。
 
 <Code
   lang="typescript"
   code={toolApprovalDefinition}
-  title="ツール承認の定義"
+  title="Tool approval definition"
   meta={`{10}`}
 />
 
 ### フロー
 
-1. エージェントがツール（複数可）を呼び出すと判断した場合、`needsApproval` の評価により、このツールに承認が必要かを確認します
-2. 承認が必要な場合、エージェントは承認がすでに許可または却下されているかを確認します
-   - 承認が許可も却下もされていない場合、ツールはツール呼び出しを実行できない旨の固定メッセージをエージェントに返します
-   - 承認 / 却下が未処理の場合、ツール承認リクエストをトリガーします
-3. エージェントはすべてのツール承認リクエストを収集し、実行を中断します
-4. 中断がある場合、[エージェントの実行結果](/openai-agents-js/ja/guides/results) に、保留中のステップを表す `interruptions` 配列が含まれます。ツール呼び出しに確認が必要なときは、`type: "tool_approval_item"` を持つ `ToolApprovalItem` が現れます
-5. ツール呼び出しを承認または却下するには、`result.state.approve(interruption)` または `result.state.reject(interruption)` を呼び出します
-6. すべての中断を処理した後、`result.state` を `runner.run(agent, state)` に渡して実行を再開できます。ここで `agent` は全体の実行をトリガーした元のエージェントです
-7. フローはステップ 1 から再開します
+1. ツール呼び出しが実行される直前に、 SDK はその承認ルール（ `needsApproval` または hosted MCP の同等機能）を評価します
+2. 承認が必要で、かつまだ判定が保存されていない場合、ツール呼び出しは実行されません。代わりに、実行に [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) が記録されます
+3. そのターンの終了時に、実行は一時停止し、保留中の承認を [エージェントの実行結果](/openai-agents-js/guides/results) の `interruptions` 配列で返します。これにはネストした `agent.asTool()` 実行内で発生した承認も含まれます
+4. 各保留項目を `result.state.approve(interruption)` または `result.state.reject(interruption)` で解決します。同じツールを残りの実行中ずっと承認または拒否のままにする場合は、 `{ alwaysApprove: true }` または `{ alwaysReject: true }` を渡します。拒否時には `{ message: '...' }` も渡せます。これにより、その特定のツール呼び出しについてモデルに返す拒否テキストを制御できます
+5. 更新した `result.state` を `runner.run(agent, state)` に渡して再開します。ここで `agent` はその実行の元のトップレベルエージェントです。 SDK は中断地点から継続し、ネストしたエージェントツール実行も含めて再開します
+
+`{ alwaysApprove: true }` または `{ alwaysReject: true }` で作成された持続的な判定は実行状態に保存されるため、同じ一時停止中の実行を後で再開するときも `toString()` / `fromString()` をまたいで保持されます。
+
+GA モデルでは、コンピューターツールの割り込みが 1 つの `computer_call` 内のアクションバッチを表す場合があります。 SDK は実行前にアクションごとに `needsApproval` を評価するため、 1 つの保留承認が move + click のような連続操作をカバーすることがあります。 `interruption.rawItem` を調べて UI を描画する場合は、 GA の `actions` 配列と従来の単一 `action` フィールドの両方に対応してください。
+
+シリアライズされた `RunState` は、現在の `computer` ツール名と従来の `computer_use_preview` 名の両方にまたがってコンピューター承認を保持するため、 preview から GA への移行中でも一時停止した実行を問題なく再開できます。
+
+`message` を指定しない場合、 SDK は設定された `toolErrorFormatter` （存在する場合）を使い、それでもなければデフォルトの拒否テキストを使います。
+
+同じパスで保留中の承認をすべて解決する必要はありません。一部の項目だけを承認または拒否して再実行した場合、解決済みの呼び出しは継続され、未解決のものは `interruptions` に残って再び実行を一時停止します。
+
+### 自動承認の判定
+
+手動の `interruptions` は最も汎用的なパターンですが、それだけではありません。
+
+- ローカルの `shellTool()` と `applyPatchTool()` は `onApproval` を使ってコード内で即座に承認または拒否できます
+- Hosted MCP ツールは `requireApproval` と `onApproval` を組み合わせて同様のプログラム的判定を行えます
+- 通常の関数ツールはこのページの手動割り込みフローを使います
+
+これらのコールバックが判定を返すと、人間の応答待ちで一時停止せずに実行が継続されます。 Realtime / 音声セッション API については、[音声エージェントの構築ガイド](/openai-agents-js/guides/voice-agents/build#approval-requests)の承認フローを参照してください。
+
+### ストリーミングとセッション
+
+同じ割り込みフローはストリーミング実行でも機能します。ストリーミング実行が一時停止したら、 `stream.completed` を待ち、 `stream.interruptions` を読み取り、解決して、再開後もストリーミングを続けたい場合は `{ stream: true }` を付けて再度 `run()` を呼び出します。このパターンのストリーミング版は、[ストリーミング中の Human in the loop](/openai-agents-js/guides/streaming#human-in-the-loop-while-streaming)を参照してください。
+
+`session` も使っている場合、 `RunState` から再開するときも同じ `session` を渡し続けてください。すると再開後のターンは入力を再準備せずにセッションメモリへ追加されます。セッションライフサイクルの詳細は[セッションガイド](/openai-agents-js/guides/sessions)を参照してください。
 
 ## 例
 
-以下は、ターミナルで承認を促し、状態を一時的にファイルに保存する Human in the loop（人間の介入）フローの、より完全な例です。
+以下は、ターミナルで承認を求め、状態を一時的にファイルへ保存する、より完全な human-in-the-loop フローの例です。
 
 <Code
   lang="typescript"
   code={humanInTheLoopExample}
-  title="Human in the loop（人間の介入）"
+  title="Human in the loop"
 />
 
-エンドツーエンドで動作する完全版は [the full example script](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts) を参照してください。
+動作するエンドツーエンド版は、[完全なサンプルスクリプト](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts)を参照してください。
 
-## より長い承認時間への対応
+## 長い承認待ち時間への対応
 
-Human in the loop（人間の介入）フローは、サーバーを稼働し続けることなく、長時間の中断が可能なように設計されています。リクエストを一度終了し、後で続行する必要がある場合は、状態をシリアライズして再開できます。
+human-in-the-loop フローは、サーバーを動かし続けなくても長時間中断できるように設計されています。リクエストを終了して後で続行する必要がある場合は、状態をシリアライズして後で再開できます。
 
-`JSON.stringify(result.state)` を使用して状態をシリアライズし、後で `RunState.fromString(agent, serializedState)` にシリアライズ済み状態を渡して再開できます。ここで `agent` は全体の実行をトリガーしたエージェントのインスタンスです。
+`result.state.toString()` （または `JSON.stringify(result.state)` ）で状態をシリアライズし、後でシリアライズ済み状態を `RunState.fromString(agent, serializedState)` に渡して再開できます。ここで `agent` はその実行全体を開始したエージェントのインスタンスです。
 
-この方法により、シリアライズされた状態をデータベースやリクエストと一緒に保存できます。
+再開プロセスで新しいコンテキストオブジェクトを注入する必要がある場合は、代わりに `RunState.fromStringWithContext(agent, serializedState, context, { contextStrategy })` を使います。
+
+- `contextStrategy: 'merge'` （デフォルト）は、渡した `RunContext` を維持しつつシリアライズ済み承認状態をマージし、新しいコンテキストに未定義の場合はシリアライズ済み `toolInput` を復元します
+- `contextStrategy: 'replace'` は、渡した `RunContext` をそのまま使って実行を再構築します
+
+シリアライズされた実行状態には、アプリのコンテキストに加えて、承認・使用量・ネストした `toolInput`・保留中のネストしたエージェントツール再開など、 SDK 管理のランタイムメタデータも含まれます。シリアライズ状態を保存または転送する予定がある場合は、 `runContext.context` を永続化データとして扱い、意図的に状態に含めたい場合を除いて秘密情報は置かないでください。
+
+デフォルトでは、シークレットを誤って永続化しないよう、トレーシング API キーはシリアライズ状態から除外されます。状態と一緒にトレーシング認証情報を移動する必要がある場合のみ、 `result.state.toString({ includeTracingApiKey: true })` を渡してください。
+
+これにより、シリアライズ済み状態をデータベースやリクエストと一緒に保存できます。
 
 ### 保留タスクのバージョニング
 
 <Aside>
-  これは主に、シリアライズした状態を長期間保存しつつ、エージェントに変更を加える場合に該当します
+  これは主に、エージェントを変更しながらシリアライズ済み状態を
+  長期間保存しようとしている場合に当てはまります。
 </Aside>
 
-承認リクエストに時間がかかり、エージェント定義を意味のある形でバージョン管理したい、または Agents SDK のバージョンを上げたい場合は、パッケージエイリアスを使って Agents SDK の 2 つのバージョンを並行インストールし、独自の分岐ロジックを実装することを現時点では推奨します。
+承認リクエストに時間がかかり、エージェント定義を意味のある形でバージョン管理したい場合、または Agents SDK のバージョンを上げる予定がある場合、現時点ではパッケージエイリアスを使って Agents SDK の 2 つのバージョンを並行インストールし、独自の分岐ロジックを実装することを推奨します。
 
-実務上は、自分のコードにバージョン番号を割り当ててシリアライズ済み状態と一緒に保存し、デシリアライズを自分のコードの正しいバージョンへ誘導することを意味します。
+実運用では、自分のコードにバージョン番号を割り当ててシリアライズ済み状態と一緒に保存し、デシリアライズを正しいバージョンのコードへ導くことを意味します。

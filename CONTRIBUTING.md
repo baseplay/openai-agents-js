@@ -23,8 +23,8 @@ Other important directories:
 
 ### Prerequisites
 
-- Node.js v18 or later
-- pnpm v7 or later
+- Node.js 22 or later
+- pnpm 10 or later
 
 ### Setup
 
@@ -80,8 +80,7 @@ Tests use Vitest and are located alongside source files in each package under `p
 
 ## Changesets and versioning
 
-This repository uses [Changesets](https://github.com/changesets/changesets) for version management and changelog generation.
-If your changes affect the public API or introduce user-visible changes (bug fixes, new features, or breaking changes), create a changeset:
+This repository uses [Changesets](https://github.com/changesets/changesets) for version management and changelog generation. If your changes affect the public API or introduce user-visible changes (bug fixes, new features, or breaking changes), create a changeset:
 
 ```bash
 pnpm changeset
@@ -91,8 +90,7 @@ Follow the interactive prompts. Do not manually bump package versions.
 
 ## Reporting issues
 
-Before opening a new issue, search existing issues to avoid duplicates.
-When opening an issue, include:
+Before opening a new issue, search existing issues to avoid duplicates. When opening an issue, include:
 
 - A clear and descriptive title
 - A short summary of the problem or feature request
@@ -104,9 +102,9 @@ When opening an issue, include:
 
 1. Fork the repository and create a branch with a descriptive name (e.g., `fix/missing-error`, `feat/new-tool`).
 2. Ensure your branch is up to date with `main`.
-3. Make your changes, add or update tests, and ensure that:
+3. Make your changes, add or update tests, and ensure that the following succeeds:
    ```bash
-   pnpm build && pnpm test && pnpm lint
+   pnpm build && pnpm -r build-check && pnpm test && pnpm lint
    ```
 4. If applicable, generate a changeset (`pnpm changeset`).
 5. Make sure you have [Trufflehog](https://github.com/trufflesecurity/trufflehog) installed to ensure no secrets are accidentally committed.
@@ -122,9 +120,7 @@ When opening an issue, include:
 
 ## Releasing
 
-Releasing happens automatically. After every push to `main` the CI will run. After it passed,
-the Changeset Action will check if there are any open changeset entries and add them to either an
-open version bump PR or create a new one.
+Releasing happens automatically. After every push to `main` the CI will run. After it passed, the Changeset Action will check if there are any open changeset entries and add them to either an open version bump PR or create a new one.
 
 For a maintainer to release a new version, the PR from Changeset has to be merged.
 

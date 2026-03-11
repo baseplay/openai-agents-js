@@ -40,14 +40,18 @@ import { EventEmitterDelegate } from '@openai/agents-core/utils';
  * The models that are supported by the OpenAI Realtime API.
  */
 export type OpenAIRealtimeModels =
-  | 'gpt-4o-realtime-preview'
-  | 'gpt-4o-mini-realtime-preview'
-  | 'gpt-4o-realtime-preview-2025-06-03'
-  | 'gpt-4o-realtime-preview-2024-12-17'
-  | 'gpt-4o-realtime-preview-2024-10-01'
-  | 'gpt-4o-mini-realtime-preview-2024-12-17'
   | 'gpt-realtime'
+  | 'gpt-realtime-1.5'
   | 'gpt-realtime-2025-08-28'
+  | 'gpt-4o-realtime-preview'
+  | 'gpt-4o-realtime-preview-2024-10-01'
+  | 'gpt-4o-realtime-preview-2024-12-17'
+  | 'gpt-4o-realtime-preview-2025-06-03'
+  | 'gpt-4o-mini-realtime-preview'
+  | 'gpt-4o-mini-realtime-preview-2024-12-17'
+  | 'gpt-realtime-mini'
+  | 'gpt-realtime-mini-2025-10-06'
+  | 'gpt-realtime-mini-2025-12-15'
   | (string & {}); // ensures autocomplete works
 
 /**
@@ -105,6 +109,13 @@ export type OpenAIRealtimeEventTypes = {
   disconnected: [];
 } & RealtimeTransportEventTypes;
 
+/**
+ * Shape of the payload that the Realtime API expects for session.create/update operations.
+ * This closely mirrors the REST `CallAcceptParams` type so that callers can feed the payload
+ * directly into the `openai.realtime.calls.accept` helper without casts.
+ */
+export type RealtimeSessionPayload = { type: 'realtime' } & Record<string, any>;
+
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
   implements RealtimeTransportLayer
@@ -157,6 +168,14 @@ export abstract class OpenAIRealtimeBase
   abstract interrupt(): void;
 
   abstract readonly muted: boolean | null;
+
+  /**
+   * Hook for subclasses to clean up transport-specific state when audio
+   * playback finishes. Defaults to a no-op.
+   */
+  protected _afterAudioDoneEvent(): void {
+    // Intentionally empty.
+  }
 
   protected get _rawSessionConfig(): Record<string, any> | null {
     return this.#rawSessionConfig ?? null;
@@ -215,10 +234,10 @@ export abstract class OpenAIRealtimeBase
       const usage = new Usage({
         inputTokens,
         inputTokensDetails:
-          response.data.response.usage?.input_tokens_details ?? {},
+          response.data.response.usage?.input_token_details ?? {},
         outputTokens,
         outputTokensDetails:
-          response.data.response.usage?.output_tokens_details ?? {},
+          response.data.response.usage?.output_token_details ?? {},
         totalTokens,
       });
       this.emit('usage_update', usage);
@@ -230,10 +249,10 @@ export abstract class OpenAIRealtimeBase
           usage: {
             inputTokens,
             inputTokensDetails:
-              response.data.response.usage?.input_tokens_details ?? {},
+              response.data.response.usage?.input_token_details ?? {},
             outputTokens,
             outputTokensDetails:
-              response.data.response.usage?.output_tokens_details ?? {},
+              response.data.response.usage?.output_token_details ?? {},
             totalTokens,
           },
         },
@@ -243,6 +262,7 @@ export abstract class OpenAIRealtimeBase
 
     if (parsed.type === 'response.output_audio.done') {
       this.emit('audio_done');
+      this._afterAudioDoneEvent();
       return;
     }
 
@@ -523,10 +543,18 @@ export abstract class OpenAIRealtimeBase
     );
   }
 
-  protected _getMergedSessionConfig(config: Partial<RealtimeSessionConfig>) {
+  protected _getMergedSessionConfig(
+    config: Partial<RealtimeSessionConfig>,
+  ): RealtimeSessionPayload {
     const newConfig = toNewSessionConfig(config);
 
-    const sessionData: Record<string, any> = {
+    const noiseReductionOverride = newConfig.audio?.input?.noiseReduction;
+    const transcriptionOverride = newConfig.audio?.input?.transcription;
+    const turnDetectionOverride = OpenAIRealtimeBase.buildTurnDetectionConfig(
+      newConfig.audio?.input?.turnDetection,
+    );
+
+    const sessionData: RealtimeSessionPayload = {
       type: 'realtime',
       instructions: newConfig.instructions,
       model: newConfig.model ?? this.#model,
@@ -539,16 +567,20 @@ export abstract class OpenAIRealtimeBase
             newConfig.audio?.input?.format ??
             DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.format,
           noise_reduction:
-            newConfig.audio?.input?.noiseReduction ??
-            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.noiseReduction,
+            noiseReductionOverride === undefined
+              ? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input
+                  ?.noiseReduction
+              : noiseReductionOverride,
           transcription:
-            newConfig.audio?.input?.transcription ??
-            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.transcription,
+            transcriptionOverride === undefined
+              ? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input
+                  ?.transcription
+              : transcriptionOverride,
           turn_detection:
-            OpenAIRealtimeBase.buildTurnDetectionConfig(
-              newConfig.audio?.input?.turnDetection,
-            ) ??
-            DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.turnDetection,
+            turnDetectionOverride === undefined
+              ? DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input
+                  ?.turnDetection
+              : turnDetectionOverride,
         },
         output: {
           format:
@@ -579,20 +611,65 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (newConfig.tools && newConfig.tools.length > 0) {
-      sessionData.tools = newConfig.tools.map((tool: any) => ({
-        ...tool,
-        strict: undefined,
-      }));
+      sessionData.tools = newConfig.tools.map((tool: any) => {
+        const pickDefined = (obj: Record<string, any>) =>
+          Object.fromEntries(
+            Object.entries(obj).filter(
+              ([, value]) => typeof value !== 'undefined',
+            ),
+          );
+
+        if (tool.type === 'mcp') {
+          // Realtime API MCP tool shape: session.update properties and MCP tool headers
+          return pickDefined({
+            type: 'mcp',
+            server_label: tool.server_label,
+            server_url: tool.server_url,
+            server_description: tool.server_description,
+            connector_id: tool.connector_id,
+            authorization: tool.authorization,
+            headers: tool.headers,
+            allowed_tools: tool.allowed_tools,
+            require_approval: tool.require_approval,
+          });
+        }
+
+        // Realtime API function tool shape: keep only documented fields for session.update.
+        return pickDefined({
+          type: tool.type,
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        });
+      });
     }
 
     return sessionData;
   }
 
+  /**
+   * Build the payload object expected by the Realtime API when creating or updating a session.
+   *
+   * The helper centralises the conversion from camelCase runtime config to the snake_case payload
+   * required by the Realtime API so transports that need a one-off payload (for example SIP call
+   * acceptance) can reuse the same logic without duplicating private state.
+   *
+   * @param config - The session config to merge with defaults.
+   */
+  buildSessionPayload(
+    config: Partial<RealtimeSessionConfig>,
+  ): RealtimeSessionPayload {
+    return this._getMergedSessionConfig(config);
+  }
+
   private static buildTurnDetectionConfig(
-    c: RealtimeTurnDetectionConfig | undefined,
-  ): RealtimeTurnDetectionConfigAsIs | undefined {
+    c: RealtimeTurnDetectionConfig | null | undefined,
+  ): RealtimeTurnDetectionConfigAsIs | null | undefined {
     if (typeof c === 'undefined') {
       return undefined;
+    }
+    if (c === null) {
+      return null;
     }
     const {
       type,
@@ -608,21 +685,20 @@ export abstract class OpenAIRealtimeBase
       threshold,
       idleTimeoutMs,
       idle_timeout_ms,
+      modelVersion,
+      model_version,
       ...rest
     } = c;
 
     const config: RealtimeTurnDetectionConfigAsIs & Record<string, any> = {
       type,
-      create_response: createResponse ? createResponse : create_response,
+      create_response: createResponse ?? create_response,
       eagerness,
-      interrupt_response: interruptResponse
-        ? interruptResponse
-        : interrupt_response,
-      prefix_padding_ms: prefixPaddingMs ? prefixPaddingMs : prefix_padding_ms,
-      silence_duration_ms: silenceDurationMs
-        ? silenceDurationMs
-        : silence_duration_ms,
-      idle_timeout_ms: idleTimeoutMs ? idleTimeoutMs : idle_timeout_ms,
+      interrupt_response: interruptResponse ?? interrupt_response,
+      prefix_padding_ms: prefixPaddingMs ?? prefix_padding_ms,
+      silence_duration_ms: silenceDurationMs ?? silence_duration_ms,
+      idle_timeout_ms: idleTimeoutMs ?? idle_timeout_ms,
+      model_version: modelVersion ?? model_version,
       threshold,
       ...rest,
     };
@@ -646,7 +722,7 @@ export abstract class OpenAIRealtimeBase
    *
    * @param tracingConfig - The tracing config to set. We don't support 'auto' here as the SDK will always configure a Workflow Name unless it exists
    */
-  protected _updateTracingConfig(tracingConfig: RealtimeTracingConfig) {
+  protected _updateTracingConfig(tracingConfig: RealtimeTracingConfig | null) {
     if (typeof this.#tracingConfig === 'undefined') {
       // treating it as default value
       this.#tracingConfig = null;
@@ -665,7 +741,7 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (
-      this.#tracingConfig !== null && 
+      this.#tracingConfig !== null &&
       typeof this.#tracingConfig !== 'string' &&
       typeof tracingConfig !== 'string'
     ) {
@@ -735,7 +811,7 @@ export abstract class OpenAIRealtimeBase
    * @param config - The session config to update.
    */
   updateSessionConfig(config: Partial<RealtimeSessionConfig>): void {
-    const sessionData = this._getMergedSessionConfig(config);
+    const sessionData = this.buildSessionPayload(config);
 
     this.sendEvent({
       type: 'session.update',
@@ -866,6 +942,7 @@ export abstract class OpenAIRealtimeBase
   sendMcpResponse(
     approvalRequest: RealtimeMcpCallApprovalRequestItem,
     approved: boolean,
+    reason?: string,
   ): void {
     this.sendEvent({
       type: 'conversation.item.create',
@@ -874,6 +951,7 @@ export abstract class OpenAIRealtimeBase
         type: 'mcp_approval_response',
         approval_request_id: approvalRequest.itemId,
         approve: approved,
+        ...(reason !== undefined ? { reason } : {}),
       },
     });
   }

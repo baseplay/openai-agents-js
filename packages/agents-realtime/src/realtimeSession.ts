@@ -8,12 +8,16 @@ import {
   RunContext,
   Usage,
   RunToolApprovalItem,
+  invokeFunctionTool,
   type FunctionTool,
+  type ToolErrorFormatterArgs,
+  type ToolErrorFormatter,
 } from '@openai/agents-core';
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
 import type {
   RealtimeSessionConfig,
+  RealtimeSessionConfigDefinition,
   RealtimeToolDefinition,
   RealtimeTracingConfig,
   RealtimeUserInput,
@@ -53,6 +57,10 @@ import {
   isValidRealtimeTool,
   toRealtimeToolDefinition,
 } from './tool';
+import {
+  runToolInputGuardrails,
+  runToolOutputGuardrails,
+} from '@openai/agents-core';
 
 /**
  * The context data for a realtime session. This is the context data that is passed to the agent.
@@ -130,6 +138,12 @@ export type RealtimeSessionOptions<TContext = unknown> = {
    * Whether to automatically trigger a response for MCP tool calls.
    */
   automaticallyTriggerResponseForMcpToolCalls?: boolean;
+
+  /**
+   * Formats tool error messages that are returned to the model.
+   * Returning `undefined` falls back to the SDK default message.
+   */
+  toolErrorFormatter?: ToolErrorFormatter<RealtimeContextData<TContext>>;
 };
 
 export type RealtimeSessionConnectOptions = {
@@ -148,12 +162,23 @@ export type RealtimeSessionConnectOptions = {
    * The URL to use for the connection.
    */
   url?: string;
+
+  /**
+   * The call ID to attach to when connecting to a SIP-initiated session.
+   */
+  callId?: string;
 };
 
 function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
   return JSON.parse(
     JSON.stringify(DEFAULT_OPENAI_REALTIME_SESSION_CONFIG),
   ) as Partial<RealtimeSessionConfig>;
+}
+
+const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -218,6 +243,7 @@ export class RealtimeSession<
   #lastSessionConfig: Partial<RealtimeSessionConfig> | null =
     cloneDefaultSessionConfig();
   #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
+  #eventListenersAttached = false;
 
   constructor(
     public readonly initialAgent:
@@ -341,10 +367,23 @@ export class RealtimeSession<
   async #getSessionConfig(
     additionalConfig: Partial<RealtimeSessionConfig> = {},
   ): Promise<Partial<RealtimeSessionConfig>> {
+    const overridesConfig: Partial<RealtimeSessionConfig> =
+      additionalConfig ?? {};
+    const optionsConfig: Partial<RealtimeSessionConfig> =
+      this.options.config ?? {};
     const instructions = await this.#currentAgent.getSystemPrompt(
       this.#context,
     );
+    const getAudioOutputVoiceOverride = (
+      config: Partial<RealtimeSessionConfig>,
+    ): string | undefined => {
+      const audioConfig = (config as Partial<RealtimeSessionConfigDefinition>)
+        .audio;
+      return audioConfig?.output?.voice;
+    };
 
+    // Realtime expects tracing to be explicitly null to disable it; leaving the previous config
+    // in place would otherwise continue emitting spans.
     const tracingConfig: RealtimeTracingConfig | null = this.options
       .tracingDisabled
       ? null
@@ -367,6 +406,17 @@ export class RealtimeSession<
       );
     }
 
+    const audioOutputVoiceOverride =
+      getAudioOutputVoiceOverride(overridesConfig) ??
+      getAudioOutputVoiceOverride(optionsConfig);
+    const topLevelVoiceOverride = overridesConfig.voice ?? optionsConfig.voice;
+    const resolvedVoice =
+      typeof audioOutputVoiceOverride !== 'undefined'
+        ? audioOutputVoiceOverride
+        : typeof topLevelVoiceOverride !== 'undefined'
+          ? topLevelVoiceOverride
+          : this.#currentAgent.voice;
+
     // Start from any previously-sent config (so we preserve values like audio formats)
     // and the original options.config provided by the user. Preference order:
     // 1. Last session config we sent (#lastSessionConfig)
@@ -376,15 +426,15 @@ export class RealtimeSession<
     // to ensure they always reflect the current agent & runtime state.
     const base: Partial<RealtimeSessionConfig> = {
       ...(this.#lastSessionConfig ?? {}),
-      ...(this.options.config ?? {}),
-      ...(additionalConfig ?? {}),
+      ...optionsConfig,
+      ...overridesConfig,
     };
 
     // Note: Certain fields cannot be updated after the session begins, such as voice and model
     const fullConfig: Partial<RealtimeSessionConfig> = {
       ...base,
       instructions,
-      voice: this.#currentAgent.voice,
+      voice: resolvedVoice,
       model: this.options.model,
       tools: this.#currentTools,
       tracing: tracingConfig,
@@ -399,6 +449,53 @@ export class RealtimeSession<
     this.#lastSessionConfig = fullConfig;
 
     return fullConfig;
+  }
+
+  /**
+   * Compute the initial session config that the current session will use when connecting.
+   *
+   * This mirrors the configuration payload we send during `connect`, including dynamic values
+   * such as the upstream agent instructions, tool definitions, and prompt content generated at
+   * runtime. Keeping this helper exposed allows transports or orchestration layers to precompute
+   * a CallAccept-compatible payload without opening a socket.
+   *
+   * @param overrides - Additional config overrides applied on top of the session options.
+   */
+  async getInitialSessionConfig(
+    overrides: Partial<RealtimeSessionConfig> = {},
+  ): Promise<Partial<RealtimeSessionConfig>> {
+    await this.#setCurrentAgent(this.initialAgent);
+    return this.#getSessionConfig({
+      ...(this.options.config ?? {}),
+      ...(overrides ?? {}),
+    });
+  }
+
+  /**
+   * Convenience helper to compute the initial session config without manually instantiating and connecting a session.
+   *
+   * This is primarily useful for integrations that must provide the session configuration to a
+   * third party (for example the SIP `calls.accept` endpoint) before the actual realtime session
+   * is attached. The helper instantiates a throwaway session so all agent-driven dynamic fields
+   * resolve in exactly the same way as the live session path.
+   *
+   * @param agent - The starting agent for the session.
+   * @param options - Session options used to seed the config calculation.
+   * @param overrides - Additional config overrides applied on top of the provided options.
+   */
+  static async computeInitialSessionConfig<TBaseContext = unknown>(
+    agent:
+      | RealtimeAgent<TBaseContext>
+      | RealtimeAgent<RealtimeContextData<TBaseContext>>,
+    options: Partial<RealtimeSessionOptions<TBaseContext>> = {},
+    overrides: Partial<RealtimeSessionConfig> = {},
+  ): Promise<Partial<RealtimeSessionConfig>> {
+    const session = new RealtimeSession(agent, options);
+    try {
+      return await session.getInitialSessionConfig(overrides);
+    } finally {
+      session.close();
+    }
   }
 
   async updateAgent(newAgent: RealtimeAgent<TBaseContext>) {
@@ -427,6 +524,49 @@ export class RealtimeSession<
     this.#transport.sendFunctionCallOutput(toolCall, output, true);
 
     return newAgent;
+  }
+
+  async #resolveApprovalRejectionMessage(
+    toolName: string,
+    callId: string,
+    toolType: ToolErrorFormatterArgs['toolType'] = 'function',
+  ): Promise<string> {
+    // Per-call message from state.reject(item, { message }) takes precedence.
+    const perCallMessage = this.#context.getRejectionMessage(toolName, callId);
+    if (typeof perCallMessage === 'string') {
+      return perCallMessage;
+    }
+
+    const { toolErrorFormatter } = this.options;
+    if (!toolErrorFormatter) {
+      return TOOL_APPROVAL_REJECTION_MESSAGE;
+    }
+
+    try {
+      const formattedMessage = await toolErrorFormatter({
+        kind: 'approval_rejected',
+        toolType,
+        toolName,
+        callId,
+        defaultMessage: TOOL_APPROVAL_REJECTION_MESSAGE,
+        runContext: this.#context,
+      });
+
+      if (typeof formattedMessage === 'string') {
+        return formattedMessage;
+      }
+      if (typeof formattedMessage !== 'undefined') {
+        logger.warn(
+          'toolErrorFormatter returned a non-string value. Falling back to the default tool approval rejection message.',
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
+      );
+    }
+
+    return TOOL_APPROVAL_REJECTION_MESSAGE;
   }
 
   async #handleFunctionToolCall(
@@ -460,7 +600,10 @@ export class RealtimeSession<
           toolCall,
         });
 
-        const result = 'Tool execution was not approved.';
+        const result = await this.#resolveApprovalRejectionMessage(
+          tool.name,
+          toolCall.callId,
+        );
         this.#transport.sendFunctionCallOutput(toolCall, result, true);
         this.emit(
           'agent_tool_end',
@@ -489,6 +632,13 @@ export class RealtimeSession<
       }
     }
 
+    const inputGuardrailResult = await runToolInputGuardrails({
+      guardrails: tool.inputGuardrails,
+      context: this.#context,
+      agent: this.#currentAgent,
+      toolCall: toolCall as any,
+    });
+
     this.emit('agent_tool_start', this.#context, this.#currentAgent, tool, {
       toolCall,
     });
@@ -497,16 +647,34 @@ export class RealtimeSession<
     });
 
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
-    const result = await tool.invoke(this.#context, toolCall.arguments, {
-      toolCall,
-    });
+    const result =
+      inputGuardrailResult.type === 'reject'
+        ? inputGuardrailResult.message
+        : await invokeFunctionTool({
+            tool,
+            runContext: this.#context,
+            input: toolCall.arguments,
+            details: {
+              toolCall,
+            },
+          });
+    const guardedResult =
+      inputGuardrailResult.type === 'reject'
+        ? result
+        : await runToolOutputGuardrails({
+            guardrails: tool.outputGuardrails,
+            context: this.#context,
+            agent: this.#currentAgent,
+            toolCall: toolCall as any,
+            toolOutput: result,
+          });
     let stringResult: string;
-    if (isBackgroundResult(result)) {
+    if (isBackgroundResult(guardedResult)) {
       // Don't generate a new response, just send the result
-      stringResult = toSmartString(result.content);
+      stringResult = toSmartString(guardedResult.content);
       this.#transport.sendFunctionCallOutput(toolCall, stringResult, false);
     } else {
-      stringResult = toSmartString(result);
+      stringResult = toSmartString(guardedResult);
       this.#transport.sendFunctionCallOutput(toolCall, stringResult, true);
     }
     this.emit(
@@ -642,9 +810,27 @@ export class RealtimeSession<
       this.#currentAgent.emit('agent_start', this.#context, this.#currentAgent);
     });
     this.#transport.on('turn_done', (event) => {
-      const item = event.response.output[event.response.output.length - 1];
-      const textOutput = getLastTextFromAudioOutputMessage(item) ?? '';
-      const itemId = item?.id ?? '';
+      const outputItems = event.response.output ?? [];
+      let textOutput = '';
+      let itemId = '';
+
+      for (let idx = outputItems.length - 1; idx >= 0; idx--) {
+        const candidate = outputItems[idx];
+        const candidateText = getLastTextFromAudioOutputMessage(candidate);
+        if (typeof candidateText === 'string') {
+          textOutput = candidateText;
+          const candidateId = (candidate as { id?: unknown })?.id;
+          itemId = typeof candidateId === 'string' ? candidateId : '';
+          break;
+        }
+      }
+
+      if (!itemId && outputItems.length > 0) {
+        const lastItem = outputItems[outputItems.length - 1] as {
+          id?: unknown;
+        };
+        itemId = typeof lastItem?.id === 'string' ? lastItem.id : '';
+      }
       this.emit('agent_end', this.#context, this.#currentAgent, textOutput);
       this.#currentAgent.emit('agent_end', this.#context, textOutput);
 
@@ -847,11 +1033,15 @@ export class RealtimeSession<
     // makes sure the current agent is correctly set and loads the tools
     await this.#setCurrentAgent(this.initialAgent);
 
-    this.#setEventListeners();
+    if (!this.#eventListenersAttached) {
+      this.#setEventListeners();
+      this.#eventListenersAttached = true;
+    }
     await this.#transport.connect({
       apiKey: options.apiKey ?? this.options.apiKey,
       model: this.options.model,
       url: options.url,
+      callId: options.callId,
       initialSessionConfig: await this.#getSessionConfig(this.options.config),
     });
     // Ensure the cached lastSessionConfig includes everything passed as the initial session config
@@ -946,8 +1136,10 @@ export class RealtimeSession<
     options: { alwaysApprove?: boolean } = { alwaysApprove: false },
   ) {
     this.#context.approveTool(approvalItem, options);
+    const toolName =
+      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
     const tool = this.#currentAgent.tools.find(
-      (tool) => tool.name === approvalItem.rawItem.name,
+      (tool) => tool.name === toolName,
     );
     if (
       tool &&
@@ -965,9 +1157,7 @@ export class RealtimeSession<
         approvalItemToRealtimeApprovalItem(approvalItem);
       this.#transport.sendMcpResponse(mcpApprovalRequest, true);
     } else {
-      throw new ModelBehaviorError(
-        `Tool ${approvalItem.rawItem.name} not found`,
-      );
+      throw new ModelBehaviorError(`Tool ${toolName ?? 'unknown'} not found`);
     }
   }
 
@@ -976,16 +1166,22 @@ export class RealtimeSession<
    * @param approvalItem - The approval item to reject.
    * @param options - Additional options.
    * @param options.alwaysReject - Whether to always reject the tool call.
+   * @param options.message - The rejection text sent to the model.
+   *   If not provided, `toolErrorFormatter` (if configured) or the SDK default is used.
    */
   async reject(
     approvalItem: RunToolApprovalItem,
-    options: { alwaysReject?: boolean } = { alwaysReject: false },
+    options: { alwaysReject?: boolean; message?: string } = {
+      alwaysReject: false,
+    },
   ) {
     this.#context.rejectTool(approvalItem, options);
 
     // we still need to simulate a tool call to the agent to let the agent know
+    const toolName =
+      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
     const tool = this.#currentAgent.tools.find(
-      (tool) => tool.name === approvalItem.rawItem.name,
+      (tool) => tool.name === toolName,
     );
     if (
       tool &&
@@ -1001,11 +1197,17 @@ export class RealtimeSession<
       }
       const mcpApprovalRequest =
         approvalItemToRealtimeApprovalItem(approvalItem);
-      this.#transport.sendMcpResponse(mcpApprovalRequest, false);
-    } else {
-      throw new ModelBehaviorError(
-        `Tool ${approvalItem.rawItem.name} not found`,
+      const rejectionReason = this.#context.getRejectionMessage(
+        toolName,
+        mcpApprovalRequest.itemId,
       );
+      this.#transport.sendMcpResponse(
+        mcpApprovalRequest,
+        false,
+        rejectionReason,
+      );
+    } else {
+      throw new ModelBehaviorError(`Tool ${toolName ?? 'unknown'} not found`);
     }
   }
 }

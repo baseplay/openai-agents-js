@@ -3,6 +3,7 @@ import {
   convertToolChoice,
   extractAllAssistantContent,
   extractAllUserContent,
+  getCompatibleToolChoice,
   itemsToMessages,
   toolToOpenAI,
   convertHandoffTool,
@@ -57,6 +58,24 @@ describe('convertToolChoice', () => {
       function: { name: 'myFunc' },
     });
   });
+
+  test('getCompatibleToolChoice rejects impossible choices', () => {
+    expect(() => getCompatibleToolChoice('required', [])).toThrow(
+      /requires at least one available tool/,
+    );
+    expect(() =>
+      getCompatibleToolChoice('missing', [
+        {
+          type: 'function',
+          function: {
+            name: 'available',
+            description: 'Available tool',
+            parameters: { type: 'object', properties: {}, required: [] },
+          },
+        },
+      ]),
+    ).toThrow(/does not match any available tool or handoff/);
+  });
 });
 
 describe('content extraction helpers', () => {
@@ -71,20 +90,278 @@ describe('content extraction helpers', () => {
       {
         type: 'audio',
         audio: 'abc',
-        providerData: { input_audio: { foo: 'bar' } },
+        providerData: { input_audio: { format: 'mp3', foo: 'bar' } },
       },
     ];
     const converted = extractAllUserContent(userContent);
     expect(converted).toEqual([
       { type: 'text', text: 'u1', a: 1 },
       { type: 'image_url', image_url: { url: 'http://img', detail: 'auto' } },
-      { type: 'input_audio', input_audio: { data: 'abc', foo: 'bar' } },
+      {
+        type: 'input_audio',
+        input_audio: { data: 'abc', format: 'mp3', foo: 'bar' },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent preserves extras but ignores reserved providerData fields', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_text',
+        text: 'u1',
+        providerData: {
+          type: 'override_type',
+          text: 'override_text',
+          extraText: true,
+        },
+      },
+      {
+        type: 'input_image',
+        image: 'http://img',
+        providerData: {
+          type: 'override_image',
+          image_url: { url: 'http://override', detail: 'high' },
+          extraImage: true,
+        },
+      },
+      {
+        type: 'audio',
+        audio: 'abc',
+        format: 'wav',
+        providerData: {
+          type: 'override_audio',
+          input_audio: { data: 'override', format: 'mp3', foo: 'bar' },
+          extraAudio: true,
+        },
+      },
+    ];
+
+    expect(extractAllUserContent(userContent)).toEqual([
+      {
+        type: 'text',
+        text: 'u1',
+        extraText: true,
+      },
+      {
+        type: 'image_url',
+        image_url: { url: 'http://img', detail: 'high' },
+        extraImage: true,
+      },
+      {
+        type: 'input_audio',
+        input_audio: { data: 'abc', format: 'wav', foo: 'bar' },
+        extraAudio: true,
+      },
+    ]);
+  });
+
+  test('extractAllUserContent preserves extras but ignores reserved providerData fields', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_text',
+        text: 'u1',
+        providerData: {
+          type: 'override_type',
+          text: 'override_text',
+          extraText: true,
+        },
+      },
+      {
+        type: 'input_image',
+        image: 'http://img',
+        providerData: {
+          type: 'override_image',
+          image_url: { url: 'http://override', detail: 'high' },
+          extraImage: true,
+        },
+      },
+      {
+        type: 'audio',
+        audio: 'abc',
+        providerData: {
+          type: 'override_audio',
+          input_audio: { data: 'override', format: 'wav', foo: 'bar' },
+          extraAudio: true,
+        },
+      },
+    ];
+
+    expect(extractAllUserContent(userContent)).toEqual([
+      {
+        type: 'text',
+        text: 'u1',
+        extraText: true,
+      },
+      {
+        type: 'image_url',
+        image_url: { url: 'http://img', detail: 'high' },
+        extraImage: true,
+      },
+      {
+        type: 'input_audio',
+        input_audio: { data: 'abc', format: 'wav', foo: 'bar' },
+        extraAudio: true,
+      },
     ]);
   });
 
   test('extractAllUserContent throws on unknown entry', () => {
     const bad: any = [{ type: 'bad' }];
     expect(() => extractAllUserContent(bad)).toThrow();
+  });
+
+  test('extractAllUserContent converts input_file with data URL', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'data:application/pdf;base64,JVBER...',
+        filename: 'document.pdf',
+      },
+    ];
+    const converted = extractAllUserContent(userContent);
+    expect(converted).toEqual([
+      {
+        type: 'file',
+        file: {
+          file_data: 'data:application/pdf;base64,JVBER...',
+          filename: 'document.pdf',
+        },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent throws on https URL (not supported in Chat Completions)', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'https://example.com/document.pdf',
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /Chat Completions only supports data URLs/,
+    );
+  });
+
+  test('extractAllUserContent converts input_file with file ID object', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: { id: 'file-abc123' },
+      },
+    ];
+    const converted = extractAllUserContent(userContent);
+    expect(converted).toEqual([
+      {
+        type: 'file',
+        file: {
+          file_id: 'file-abc123',
+        },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent throws on file URL object (not supported in Chat Completions)', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: { url: 'https://example.com/document.pdf' },
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /requires a data URL or file ID/,
+    );
+  });
+
+  test('extractAllUserContent throws on audio file IDs', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'audio',
+        audio: { id: 'file-audio' },
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /only supports inline audio data/i,
+    );
+  });
+
+  test('extractAllUserContent throws when audio format is missing', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'audio',
+        audio: 'abc',
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /requires format "wav" or "mp3"/i,
+    );
+  });
+
+  test('extractAllUserContent gets filename from providerData', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'data:application/pdf;base64,JVBER...',
+        providerData: {
+          filename: 'from-provider.pdf',
+        },
+      },
+    ];
+    const converted = extractAllUserContent(userContent);
+    expect(converted).toEqual([
+      {
+        type: 'file',
+        file: {
+          file_data: 'data:application/pdf;base64,JVBER...',
+          filename: 'from-provider.pdf',
+        },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent prefers content filename over providerData', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'data:application/pdf;base64,JVBER...',
+        filename: 'content-filename.pdf',
+        providerData: {
+          filename: 'from-provider.pdf',
+        },
+      },
+    ];
+    const converted = extractAllUserContent(userContent);
+    expect(converted).toEqual([
+      {
+        type: 'file',
+        file: {
+          file_data: 'data:application/pdf;base64,JVBER...',
+          filename: 'content-filename.pdf',
+        },
+      },
+    ]);
+  });
+
+  test('extractAllUserContent throws on unsupported file string format', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+        file: 'not-a-valid-url-or-data',
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /use an object with the id property/,
+    );
+  });
+
+  test('extractAllUserContent throws when file is missing', () => {
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_file',
+      },
+    ];
+    expect(() => extractAllUserContent(userContent)).toThrow(
+      /requires a data URL or file ID/,
+    );
   });
 
   test('extractAllAssistantContent converts supported entries and ignores images/audio', () => {
@@ -167,6 +444,7 @@ describe('itemsToMessages', () => {
     expect(msgs).toEqual([
       {
         role: 'assistant',
+        content: null,
         tool_calls: [
           {
             id: 'call1',
@@ -177,6 +455,64 @@ describe('itemsToMessages', () => {
       },
       { role: 'tool', tool_call_id: 'call1', content: 'res' },
     ]);
+  });
+
+  test('rejects namespaced function call history', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'lookup_account',
+        namespace: 'crm',
+        arguments: '{}',
+        status: 'in_progress',
+      } as protocol.FunctionCallItem,
+    ];
+
+    expect(() => itemsToMessages(items)).toThrow(
+      /Namespaced function call history is not supported for chat completions/,
+    );
+  });
+
+  test('rejects dotted function call names without namespace metadata', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'crm.lookup_account',
+        arguments: '{}',
+        status: 'in_progress',
+      } as protocol.FunctionCallItem,
+    ];
+
+    expect(() => itemsToMessages(items)).toThrow(
+      /Namespaced function call history is not supported for chat completions/,
+    );
+  });
+
+  test('rejects self-namespaced function call history', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'get_shipping_eta',
+        namespace: 'get_shipping_eta',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call_result',
+        callId: 'call1',
+        output: 'tomorrow',
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(() => itemsToMessages(items)).toThrow(
+      /Namespaced function call history is not supported for chat completions/,
+    );
   });
 
   test('handles built-in file_search_call and errors on unsupported type', () => {
@@ -205,6 +541,24 @@ describe('itemsToMessages', () => {
     expect(() => itemsToMessages(bad)).toThrow(UserError);
   });
 
+  test('includes explicit null content for assistant tool calls', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'in_progress',
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    const toolMsg = msgs[0] as any;
+    expect(toolMsg.role).toBe('assistant');
+    expect(toolMsg).toHaveProperty('content', null);
+  });
+
   test('converts reasoning items into assistant reasoning', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -217,7 +571,177 @@ describe('itemsToMessages', () => {
     expect(msgs).toEqual([
       {
         role: 'assistant',
+        content: null,
         reasoning: 'why',
+      },
+    ]);
+  });
+
+  test('propagates providerData from function_call to assistant message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'myFunc',
+        arguments: '{"x":1}',
+        status: 'in_progress',
+        providerData: { custom_field: 'value', another: 123 },
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].role).toBe('assistant');
+    expect((msgs[0] as any).custom_field).toBe('value');
+    expect((msgs[0] as any).another).toBe(123);
+  });
+
+  test('propagates providerData from function_call_result to tool message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: 'result',
+        providerData: { extra: 'data' },
+      } as protocol.FunctionCallResultItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(2);
+    expect((msgs[1] as any).extra).toBe('data');
+  });
+
+  test('handles function_call without providerData gracefully', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'in_progress',
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].role).toBe('assistant');
+    expect((msgs[0] as any).tool_calls).toHaveLength(1);
+  });
+
+  test('merges providerData from multiple function_calls into single assistant message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f1',
+        arguments: '{}',
+        status: 'in_progress',
+        providerData: { from_first: true },
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call',
+        id: '2',
+        callId: 'call2',
+        name: 'f2',
+        arguments: '{}',
+        status: 'in_progress',
+        providerData: { from_second: true },
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toHaveLength(1);
+    expect((msgs[0] as any).tool_calls).toHaveLength(2);
+    expect((msgs[0] as any).from_first).toBe(true);
+    expect((msgs[0] as any).from_second).toBe(true);
+  });
+
+  test('preserves extra providerData without letting it overwrite canonical envelopes', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'message',
+        role: 'user',
+        content: 'keep-user',
+        providerData: {
+          role: 'assistant',
+          content: 'override-user',
+          customUser: true,
+        },
+      } as protocol.UserMessageItem,
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+        providerData: {
+          role: 'tool',
+          content: 'override-assistant',
+          tool_calls: [{ id: 'override' }],
+          type: 'function',
+          function: {
+            name: 'override_name',
+            arguments: '{"override":true}',
+            extraNested: true,
+          },
+          customAssistant: true,
+        },
+      } as protocol.FunctionCallItem,
+      {
+        type: 'function_call_result',
+        id: '2',
+        name: 'f',
+        callId: 'call1',
+        status: 'completed',
+        output: 'result',
+        providerData: {
+          role: 'assistant',
+          tool_call_id: 'override-call',
+          content: 'override-tool',
+          extraTool: true,
+        },
+      } as protocol.FunctionCallResultItem,
+    ];
+
+    expect(itemsToMessages(items)).toEqual([
+      {
+        role: 'user',
+        content: 'keep-user',
+        customUser: true,
+      },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'call1',
+            type: 'function',
+            function: {
+              name: 'f',
+              arguments: '{}',
+              extraNested: true,
+            },
+            customAssistant: true,
+          },
+        ],
+        customAssistant: true,
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call1',
+        content: 'result',
+        extraTool: true,
       },
     ]);
   });

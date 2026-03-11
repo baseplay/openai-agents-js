@@ -85,6 +85,7 @@ export class OpenAIRealtimeWebSocket
 {
   #apiKey: string | undefined;
   #url: string | undefined;
+  #defaultUrl: string | undefined;
   #state: WebSocketState = {
     status: 'disconnected',
     websocket: undefined,
@@ -104,10 +105,17 @@ export class OpenAIRealtimeWebSocket
   #ongoingResponse: boolean = false;
   #createWebSocket?: (options: CreateWebSocketOptions) => Promise<WebSocket>;
   #skipOpenEventListeners?: boolean;
+  #resetAudioPlaybackState() {
+    this.#currentItemId = undefined;
+    this._firstAudioTimestamp = undefined;
+    this._audioLengthMs = 0;
+    this.#currentAudioContentIndex = undefined;
+  }
 
   constructor(options: OpenAIRealtimeWebSocketOptions = {}) {
     super(options);
     this.#url = options.url;
+    this.#defaultUrl = options.url;
     this.#useInsecureApiKey = options.useInsecureApiKey ?? false;
     this.#createWebSocket = options.createWebSocket;
     this.#skipOpenEventListeners = options.skipOpenEventListeners ?? false;
@@ -155,6 +163,10 @@ export class OpenAIRealtimeWebSocket
    */
   protected _onAudio(audioEvent: TransportLayerAudio) {
     this.emit('audio', audioEvent);
+  }
+
+  protected override _afterAudioDoneEvent() {
+    this.#resetAudioPlaybackState();
   }
 
   async #setupWebSocket(
@@ -306,7 +318,11 @@ export class OpenAIRealtimeWebSocket
       } else if (parsed.type === 'session.created') {
         this._tracingConfig = parsed.session.tracing;
         // Trying to turn on tracing after the session is created
-        this._updateTracingConfig(sessionConfig.tracing ?? 'auto');
+        const tracingConfig =
+          typeof sessionConfig.tracing === 'undefined'
+            ? 'auto'
+            : sessionConfig.tracing;
+        this._updateTracingConfig(tracingConfig);
       }
     });
 
@@ -324,10 +340,18 @@ export class OpenAIRealtimeWebSocket
     const model = options.model ?? this.currentModel;
     this.currentModel = model;
     this.#apiKey = await this._getApiKey(options);
-    const url =
-      options.url ??
-      this.#url ??
-      `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+    const callId = options.callId;
+    let url: string;
+    if (options.url) {
+      url = options.url;
+      this.#defaultUrl = options.url;
+    } else if (callId) {
+      url = `wss://api.openai.com/v1/realtime?call_id=${callId}`;
+    } else if (this.#defaultUrl) {
+      url = this.#defaultUrl;
+    } else {
+      url = `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+    }
     this.#url = url;
 
     const sessionConfig: Partial<RealtimeSessionConfig> = {
@@ -457,9 +481,6 @@ export class OpenAIRealtimeWebSocket
       this._interrupt(elapsedTime, cancelOngoingResponse);
     }
 
-    this.#currentItemId = undefined;
-    this._firstAudioTimestamp = undefined;
-    this._audioLengthMs = 0;
-    this.#currentAudioContentIndex = undefined;
+    this.#resetAudioPlaybackState();
   }
 }

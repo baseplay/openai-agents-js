@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   toFunctionToolName,
   getSchemaAndParserFromInputType,
+  convertAgentOutputTypeToSerializable,
 } from '../../src/utils/tools';
 import { z } from 'zod';
 import { UserError } from '../../src/errors';
@@ -37,9 +38,75 @@ describe('utils/tools', () => {
     expect(res.parser('{"bar":2}')).toEqual({ bar: 2 });
   });
 
+  it('getSchemaAndParserFromInputType includes zod descriptions when available', () => {
+    const zodSchema = z
+      .object({
+        text: z.string().describe('Text to translate'),
+      })
+      .describe('Translation input');
+    const res = getSchemaAndParserFromInputType(zodSchema, 'tool');
+    expect(res.schema).toMatchObject({
+      description: 'Translation input',
+      properties: {
+        text: {
+          description: 'Text to translate',
+        },
+      },
+    });
+  });
+
   it('getSchemaAndParserFromInputType rejects invalid input', () => {
     expect(() => getSchemaAndParserFromInputType('bad' as any, 't')).toThrow(
       UserError,
     );
+  });
+
+  it('falls back to compat schema when the helper rejects optional fields', () => {
+    const zodSchema = z.object({
+      required: z.string(),
+      optional: z.number().optional(),
+    });
+    const res = getSchemaAndParserFromInputType(
+      zodSchema,
+      'tool-with-optional',
+    );
+    expect(res.schema).toEqual({
+      type: 'object',
+      properties: {
+        required: { type: 'string' },
+        optional: { type: 'number' },
+      },
+      required: ['required'],
+      additionalProperties: false,
+      $schema: 'http://json-schema.org/draft-07/schema#',
+    });
+    expect(res.parser('{"required":"ok"}')).toEqual({ required: 'ok' });
+    expect(res.parser('{"required":"ok","optional":2}')).toEqual({
+      required: 'ok',
+      optional: 2,
+    });
+  });
+
+  it('convertAgentOutputTypeToSerializable falls back when helper rejects optional fields', () => {
+    const zodSchema = z.object({
+      required: z.string(),
+      optional: z.number().optional(),
+    });
+    const res = convertAgentOutputTypeToSerializable(zodSchema);
+    expect(res).toEqual({
+      type: 'json_schema',
+      name: 'output',
+      strict: false,
+      schema: {
+        type: 'object',
+        properties: {
+          required: { type: 'string' },
+          optional: { type: 'number' },
+        },
+        required: ['required'],
+        additionalProperties: false,
+        $schema: 'http://json-schema.org/draft-07/schema#',
+      },
+    });
   });
 });

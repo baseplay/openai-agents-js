@@ -1,5 +1,6 @@
 import { TracingProcessor } from './processor';
 import { getGlobalTraceProvider } from './provider';
+import type { TracingConfig } from './config';
 
 export {
   getCurrentSpan,
@@ -17,8 +18,26 @@ export {
   ConsoleSpanExporter,
 } from './processor';
 export { NoopSpan, Span } from './spans';
+export type {
+  SpanData,
+  AgentSpanData,
+  FunctionSpanData,
+  GenerationUsageData,
+  GenerationSpanData,
+  ResponseSpanData,
+  HandoffSpanData,
+  CustomSpanData,
+  GuardrailSpanData,
+  TranscriptionSpanData,
+  SpeechSpanData,
+  SpeechGroupSpanData,
+  MCPListToolsSpanData,
+  SpanOptions,
+  SpanError,
+} from './spans';
 export { NoopTrace, Trace } from './traces';
 export { generateGroupId, generateSpanId, generateTraceId } from './utils';
+export type { TracingConfig };
 
 /**
  * Add a processor to the list of processors. Each processor will receive all traces/spans.

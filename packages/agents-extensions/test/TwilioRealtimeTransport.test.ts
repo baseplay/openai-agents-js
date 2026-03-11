@@ -1,6 +1,7 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
+import { allowConsole } from '../../../helpers/tests/console-guard';
 
 import type { MessageEvent as NodeMessageEvent } from 'ws';
 import type { MessageEvent } from 'undici-types';
@@ -64,6 +65,8 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('connect handles messages and events', async () => {
+    allowConsole(['error']);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
       twilioWebSocket: twilio as any,
@@ -100,6 +103,13 @@ describe('TwilioRealtimeTransportLayer', () => {
     transport.on('error', errListener);
     twilio.emit('message', { toString: () => 'bad{' });
     expect(errListener).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Error parsing message:',
+      expect.any(Error),
+      'Message:',
+      expect.any(Object),
+    );
+    errorSpy.mockRestore();
 
     twilio.emit('close');
     expect(closeSpy).toHaveBeenCalled();
@@ -164,5 +174,81 @@ describe('TwilioRealtimeTransportLayer', () => {
       inputAudioFormat: 'g711_ulaw',
       outputAudioFormat: 'g711_ulaw',
     });
+  });
+
+  test('resets counters on new Twilio start and handles invalid marks', async () => {
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const interruptSpy = vi.mocked(
+      OpenAIRealtimeWebSocket.prototype._interrupt,
+    );
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid-1' } }),
+    });
+    twilio.emit('message', {
+      toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:2' } }),
+    });
+    // malformed mark should be ignored but logged
+    twilio.emit('message', {
+      toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:x' } }),
+    });
+    expect(warnSpy).toHaveBeenCalledWith('Invalid mark name received:', 'u:x');
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid-2' } }),
+    });
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'mark', mark: { name: 'done:u' } }),
+    });
+
+    transport._interrupt(0);
+
+    // After new start, previous counts are cleared; done mark resets to baseline 0 + 50 buffer.
+    expect(interruptSpy).toHaveBeenCalledWith(50, true);
+    expect(twilio.send).toHaveBeenCalledWith(
+      JSON.stringify({ event: 'clear', streamSid: 'sid-2' }),
+    );
+    warnSpy.mockRestore();
+  });
+
+  test('resets chunk count on done marks before interrupting', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const interruptSpy = vi.mocked(
+      OpenAIRealtimeWebSocket.prototype._interrupt,
+    );
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid-1' } }),
+    });
+    twilio.emit('message', {
+      toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:7' } }),
+    });
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'mark', mark: { name: 'done:u' } }),
+    });
+
+    transport._interrupt(0);
+
+    expect(interruptSpy).toHaveBeenCalledWith(50, true);
+    expect(twilio.send).toHaveBeenCalledWith(
+      JSON.stringify({ event: 'clear', streamSid: 'sid-1' }),
+    );
   });
 });

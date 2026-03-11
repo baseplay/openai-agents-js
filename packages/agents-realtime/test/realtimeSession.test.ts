@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { once } from 'node:events';
 import { RealtimeSession } from '../src/realtimeSession';
 import { RealtimeAgent } from '../src/realtimeAgent';
 import type { RealtimeItem } from '../src/items';
@@ -8,6 +9,12 @@ import {
   Usage,
   ModelBehaviorError,
   RunToolApprovalItem,
+  ToolTimeoutError,
+  defineToolInputGuardrail,
+  defineToolOutputGuardrail,
+  ToolGuardrailFunctionOutputFactory,
+  ToolInputGuardrailTripwireTriggered,
+  ToolOutputGuardrailTripwireTriggered,
 } from '@openai/agents-core';
 import * as utils from '../src/utils';
 import type { TransportToolCallEvent } from '../src/transportLayerEvents';
@@ -15,7 +22,13 @@ import {
   DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
   OpenAIRealtimeBase,
 } from '../src/openaiRealtimeBase';
+import { OpenAIRealtimeWebRTC } from '../src/openaiRealtimeWebRtc';
+import { OpenAIRealtimeWebSocket } from '../src/openaiRealtimeWebsocket';
 import { toNewSessionConfig } from '../src/clientMessages';
+import { tool } from '@openai/agents-core';
+import { backgroundResult } from '../src/tool';
+import { z } from 'zod';
+import logger from '../src/logger';
 
 function createMessage(id: string, text: string): RealtimeItem {
   return {
@@ -25,6 +38,13 @@ function createMessage(id: string, text: string): RealtimeItem {
     status: 'completed',
     content: [{ type: 'input_text', text }],
   } as RealtimeItem;
+}
+
+async function waitForEvent<T extends unknown[]>(
+  emitter: object,
+  eventName: string,
+): Promise<T> {
+  return (await once(emitter as any, eventName)) as T;
 }
 
 describe('RealtimeSession', () => {
@@ -49,6 +69,7 @@ describe('RealtimeSession', () => {
   });
 
   it('sets the trace config correctly', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     transport.connectCalls = [];
     session.options.tracingDisabled = true;
     session.options.workflowName = 'test';
@@ -58,6 +79,10 @@ describe('RealtimeSession', () => {
     expect(transport.connectCalls[0]?.initialSessionConfig?.tracing).toEqual(
       null,
     );
+    expect(warnSpy).toHaveBeenCalledWith(
+      'In order to set traceMetadata or a groupId you need to specify a workflowName.',
+    );
+    warnSpy.mockClear();
 
     transport.connectCalls = [];
     session.options.tracingDisabled = undefined;
@@ -68,6 +93,7 @@ describe('RealtimeSession', () => {
     expect(transport.connectCalls[0]?.initialSessionConfig?.tracing).toEqual(
       'auto',
     );
+    expect(warnSpy).not.toHaveBeenCalled();
     transport.connectCalls = [];
     session.options.tracingDisabled = undefined;
     session.options.workflowName = 'test';
@@ -78,6 +104,8 @@ describe('RealtimeSession', () => {
       workflow_name: 'test',
       group_id: 'test',
     });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it('updates history and emits history_updated', () => {
@@ -118,12 +146,79 @@ describe('RealtimeSession', () => {
     expect(transport.closeCalls).toBe(1);
   });
 
+  it('selects transport based on environment and options', () => {
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+
+    const defaultSession = new RealtimeSession(agent, {});
+    expect(defaultSession.transport).toBeInstanceOf(OpenAIRealtimeWebSocket);
+
+    const customTransport = new FakeTransport();
+    const customSession = new RealtimeSession(agent, {
+      transport: customTransport,
+    });
+    expect(customSession.transport).toBe(customTransport);
+
+    const originalPeerConnection = (global as any).RTCPeerConnection;
+    (global as any).RTCPeerConnection = function () {};
+    try {
+      const webrtcSession = new RealtimeSession(agent, {
+        transport: 'webrtc',
+      });
+      expect(webrtcSession.transport).toBeInstanceOf(OpenAIRealtimeWebRTC);
+    } finally {
+      (global as any).RTCPeerConnection = originalPeerConnection;
+    }
+  });
+
+  it('exposes transport and session state via getters', () => {
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const customTransport = new FakeTransport();
+    customTransport.muted = true;
+    const customSession = new RealtimeSession(agent, {
+      transport: customTransport,
+    });
+
+    expect(customSession.transport).toBe(customTransport);
+    expect(customSession.currentAgent).toBe(agent);
+    expect(customSession.muted).toBe(true);
+    expect(customSession.history).toEqual([]);
+    expect(customSession.availableMcpTools).toEqual([]);
+    expect(customSession.context.context.history).toEqual([]);
+  });
+
   it('forwards url in connect options to transport', async () => {
     const t = new FakeTransport();
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
     const s = new RealtimeSession(agent, { transport: t });
     await s.connect({ apiKey: 'test', url: 'ws://example' });
     expect(t.connectCalls[0]?.url).toBe('ws://example');
+  });
+
+  it('forwards callId in connect options to transport', async () => {
+    const t = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test', callId: 'call_123' });
+    expect(t.connectCalls[0]?.callId).toBe('call_123');
+  });
+
+  it('does not duplicate event handlers when reconnecting', async () => {
+    const t = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const s = new RealtimeSession(agent, { transport: t });
+    const historyUpdatedListener = vi.fn();
+
+    s.on('history_updated', historyUpdatedListener);
+
+    await s.connect({ apiKey: 'test' });
+    await s.connect({ apiKey: 'test' });
+
+    historyUpdatedListener.mockClear();
+
+    t.emit('item_update', createMessage('1', 'hi'));
+
+    expect(historyUpdatedListener).toHaveBeenCalledTimes(1);
+    expect(s.history).toEqual([createMessage('1', 'hi')]);
   });
 
   it('includes default transcription config when connecting', async () => {
@@ -139,6 +234,37 @@ describe('RealtimeSession', () => {
     expect(normalizedConfig.audio?.input?.transcription).toEqual(
       DEFAULT_OPENAI_REALTIME_SESSION_CONFIG.audio?.input?.transcription,
     );
+  });
+
+  it('computes initial session config with tracing metadata and prompt', async () => {
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      prompt: () => ({
+        promptId: 'prompt-1',
+        version: '1',
+        variables: { foo: 'bar' },
+      }),
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      workflowName: 'wf',
+      groupId: 'group-1',
+      traceMetadata: { region: 'us' },
+    });
+
+    const config = await s.getInitialSessionConfig();
+    expect(config.tracing).toEqual({
+      workflow_name: 'wf',
+      group_id: 'group-1',
+      metadata: { region: 'us' },
+    });
+    expect(config.prompt).toEqual({
+      promptId: 'prompt-1',
+      version: '1',
+      variables: { foo: 'bar' },
+    });
   });
 
   it('updateHistory accepts callback', () => {
@@ -172,23 +298,161 @@ describe('RealtimeSession', () => {
     });
     await session.connect({ apiKey: 'test' });
 
-    const guardrailEvents: any[] = [];
-    session.on('guardrail_tripped', (...a) => guardrailEvents.push(a));
+    const guardrailTripped = waitForEvent<any[]>(session, 'guardrail_tripped');
     transport.emit('turn_done', {
       response: {
         output: [fakeModelMessage('bad output')],
         usage: new Usage(),
       },
     } as any);
-    await vi.waitFor(() => expect(guardrailEvents.length).toBe(1));
+    const [, , , details] = await guardrailTripped;
     expect(transport.interruptCalls).toBe(1);
     expect(transport.sendMessageCalls.at(-1)?.[0]).toContain('blocked');
-    expect(guardrailEvents[0][3]).toEqual({ itemId: '123' });
+    expect(details).toEqual({ itemId: '123' });
     vi.restoreAllMocks();
   });
 
+  it('runs tool calls end-to-end and emits lifecycle events', async () => {
+    const transport = new FakeTransport();
+    const echoTool = tool({
+      name: 'echo',
+      description: 'echo tool',
+      parameters: z.object({ message: z.string() }),
+      execute: async ({ message }) => `echo:${message}`,
+    });
+    const agent = new RealtimeAgent({
+      name: 'Tool Agent',
+      tools: [echoTool],
+    });
+    const scenarioSession = new RealtimeSession(agent, { transport });
+    const toolStart = vi.fn();
+    const toolEnd = vi.fn();
+    scenarioSession.on('agent_tool_start', toolStart);
+    scenarioSession.on('agent_tool_end', toolEnd);
+    const agentToolStart = vi.fn();
+    const agentToolEnd = vi.fn();
+    agent.on('agent_tool_start', agentToolStart);
+    agent.on('agent_tool_end', agentToolEnd);
+
+    await scenarioSession.connect({ apiKey: 'test-key' });
+
+    const outputPromise = transport.waitForNextFunctionCallOutput();
+    transport.emit('function_call', {
+      type: 'function_call',
+      name: 'echo',
+      callId: 'call-1',
+      arguments: JSON.stringify({ message: 'hi' }),
+    });
+
+    const [toolCall, output, startResponse] = await outputPromise;
+    expect(toolCall.name).toBe('echo');
+    expect(output).toBe('echo:hi');
+    expect(startResponse).toBe(true);
+    expect(toolStart).toHaveBeenCalledTimes(1);
+    expect(toolEnd).toHaveBeenCalledTimes(1);
+    expect(agentToolStart).toHaveBeenCalledTimes(1);
+    expect(agentToolEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits assistant transcript on agent_end when a tool call follows', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'Listener' });
+    const scenarioSession = new RealtimeSession(agent, { transport });
+    const sessionAgentEnd = vi.fn();
+    const agentAgentEnd = vi.fn();
+    const transcript = 'Sure, let me get that for you. One moment.';
+
+    scenarioSession.on('agent_end', sessionAgentEnd);
+    agent.on('agent_end', agentAgentEnd);
+
+    await scenarioSession.connect({ apiKey: 'test-key' });
+
+    transport.emit('turn_done', {
+      response: {
+        id: 'resp-1',
+        output: [
+          {
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_audio', transcript }],
+          },
+          {
+            id: 'call-1',
+            type: 'function_call',
+            callId: 'call-1',
+            name: 'getCallerPhone',
+            arguments: '{}',
+            status: 'completed',
+          },
+        ],
+        usage: new Usage(),
+      },
+    } as any);
+
+    expect(sessionAgentEnd).toHaveBeenCalledTimes(1);
+    expect(sessionAgentEnd.mock.calls[0][2]).toBe(transcript);
+    expect(agentAgentEnd).toHaveBeenCalledTimes(1);
+    expect(agentAgentEnd.mock.calls[0][1]).toBe(transcript);
+  });
+
+  it('merges completed audio transcripts into history', async () => {
+    const transport = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'Listener' });
+    const scenarioSession = new RealtimeSession(agent, { transport });
+    const historyEvents: any[] = [];
+    scenarioSession.on('history_updated', (h) => historyEvents.push([...h]));
+
+    await scenarioSession.connect({ apiKey: 'test-key' });
+
+    transport.emit('item_update', {
+      itemId: 'audio-1',
+      type: 'message',
+      role: 'user',
+      status: 'in_progress',
+      content: [
+        {
+          type: 'input_audio',
+          audio: 'AA==',
+          transcript: null,
+        },
+      ],
+    } as any);
+
+    expect(scenarioSession.history[0]?.itemId).toBe('audio-1');
+    const historyUpdated = waitForEvent<[RealtimeItem[]]>(
+      scenarioSession,
+      'history_updated',
+    );
+    transport.emit('*', {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'audio-1',
+      transcript: 'hello audio',
+    });
+
+    const [updatedHistory] = await historyUpdated;
+    const updatedMessage = updatedHistory[0] as any;
+    expect(historyEvents.at(-1)?.[0]?.content?.[0]?.transcript).toBe(
+      'hello audio',
+    );
+    expect(updatedMessage.content[0]?.transcript).toBe('hello audio');
+    expect(updatedMessage.status).toBe('completed');
+  });
+
   it('resets guardrail debounce per transcript item', async () => {
-    const runMock = vi.fn(async () => ({ output: {} }));
+    let guardrailRuns = 0;
+    let resolveSecondRun!: () => void;
+    const secondRunSeen = new Promise<void>((resolve) => {
+      resolveSecondRun = resolve;
+    });
+    const runMock = vi.fn(async () => {
+      guardrailRuns += 1;
+      if (guardrailRuns === 2) {
+        resolveSecondRun();
+      }
+      return { output: {} };
+    });
     vi.spyOn(guardrailModule, 'defineRealtimeOutputGuardrail').mockReturnValue({
       run: runMock,
     } as any);
@@ -210,7 +474,8 @@ describe('RealtimeSession', () => {
       itemId: '2',
       responseId: 'z',
     } as any);
-    await vi.waitFor(() => expect(runMock).toHaveBeenCalledTimes(2));
+    await secondRunSeen;
+    expect(runMock).toHaveBeenCalledTimes(2);
     vi.restoreAllMocks();
   });
 
@@ -227,27 +492,285 @@ describe('RealtimeSession', () => {
     expect(errors[0].error.message).toBe('update');
     spy.mockRestore();
 
-    const origFilter = Array.prototype.filter;
-    Array.prototype.filter = () => {
-      throw new Error('delete');
-    };
+    const filterSpy = vi
+      .spyOn(Array.prototype, 'filter')
+      .mockImplementationOnce(() => {
+        throw new Error('delete');
+      });
     transport.emit('item_deleted', { itemId: '1' } as any);
     expect(errors[1].error.message).toBe('delete');
-    Array.prototype.filter = origFilter;
+    filterSpy.mockRestore();
   });
 
   it('propagates errors from handleFunctionCall', async () => {
-    const errors: any[] = [];
-    session.on('error', (e) => errors.push(e));
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const errorEvent = waitForEvent<any[]>(session, 'error');
     transport.emit('function_call', {
       type: 'function_call',
       name: 'missing',
       callId: '1',
       arguments: '{}',
     });
-    await vi.waitFor(() =>
-      expect(errors[0].error).toBeInstanceOf(ModelBehaviorError),
+    const [error] = await errorEvent;
+    expect(error.error).toBeInstanceOf(ModelBehaviorError);
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Error handling function call',
+      expect.any(Error),
     );
+    errorSpy.mockRestore();
+  });
+
+  it('returns a timeout message when a function tool exceeds timeoutMs', async () => {
+    vi.useFakeTimers();
+    const localTransport = new FakeTransport();
+    const timedTool = tool({
+      name: 'timed_tool',
+      description: 'timed tool',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      execute: async () => new Promise(() => {}),
+    });
+    try {
+      const agent = new RealtimeAgent({
+        name: 'A',
+        handoffs: [],
+        tools: [timedTool],
+      });
+      const localSession = new RealtimeSession(agent, {
+        transport: localTransport,
+      });
+      await localSession.connect({ apiKey: 'test' });
+
+      const outputPromise = localTransport.waitForNextFunctionCallOutput();
+      localTransport.emit('function_call', {
+        type: 'function_call',
+        name: 'timed_tool',
+        callId: 'c-timeout',
+        status: 'completed',
+        arguments: '{}',
+      } as any);
+
+      await vi.advanceTimersByTimeAsync(5);
+      const [, output, startResponse] = await outputPromise;
+      expect(output).toBe("Tool 'timed_tool' timed out after 5ms.");
+      expect(startResponse).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('emits an error when timeoutBehavior is raise_exception', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const localTransport = new FakeTransport();
+    const timedTool = tool({
+      name: 'timed_tool',
+      description: 'timed tool',
+      parameters: z.object({}),
+      timeoutMs: 5,
+      timeoutBehavior: 'raise_exception',
+      execute: async () => new Promise(() => {}),
+    });
+    try {
+      const agent = new RealtimeAgent({
+        name: 'A',
+        handoffs: [],
+        tools: [timedTool],
+      });
+      const localSession = new RealtimeSession(agent, {
+        transport: localTransport,
+      });
+      await localSession.connect({ apiKey: 'test' });
+
+      const errorEvent = waitForEvent<any[]>(localSession, 'error');
+      localTransport.emit('function_call', {
+        type: 'function_call',
+        name: 'timed_tool',
+        callId: 'c-timeout-raise',
+        status: 'completed',
+        arguments: '{}',
+      } as any);
+
+      await vi.advanceTimersByTimeAsync(5);
+      const [error] = await errorEvent;
+      expect(error.error).toBeInstanceOf(ToolTimeoutError);
+      expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
+    } finally {
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('applies input tool guardrail rejectContent and skips tool execution', async () => {
+    const localTransport = new FakeTransport();
+    const guardrail = defineToolInputGuardrail({
+      name: 'rejector',
+      run: async () =>
+        ToolGuardrailFunctionOutputFactory.rejectContent('blocked'),
+    });
+    const guardedTool = tool({
+      name: 'guarded',
+      description: 'guarded tool',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'should-not-run'),
+      inputGuardrails: [guardrail],
+    }) as any;
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const invokeSpy = vi.spyOn(guardedTool, 'invoke');
+
+    const outputPromise = localTransport.waitForNextFunctionCallOutput();
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'guarded',
+      callId: 'c1',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('blocked');
+    expect(invokeSpy).not.toHaveBeenCalled();
+  });
+
+  it('emits error when input tool guardrail throws', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const localTransport = new FakeTransport();
+    const guardrail = defineToolInputGuardrail({
+      name: 'thrower',
+      run: async () => ToolGuardrailFunctionOutputFactory.throwException(),
+    });
+    const guardedTool = tool({
+      name: 'guarded_throw',
+      description: 'guarded tool',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'never'),
+      inputGuardrails: [guardrail],
+    }) as any;
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const invokeSpy = vi.spyOn(guardedTool, 'invoke');
+
+    const errorEvent = waitForEvent<any[]>(localSession, 'error');
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'guarded_throw',
+      callId: 'c2',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    const [error] = await errorEvent;
+    expect(error.error).toBeInstanceOf(ToolInputGuardrailTripwireTriggered);
+    expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
+    expect(invokeSpy).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Error handling function call',
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('applies output tool guardrail rejectContent and replaces output', async () => {
+    const localTransport = new FakeTransport();
+    const guardrail = defineToolOutputGuardrail({
+      name: 'replace',
+      run: async () =>
+        ToolGuardrailFunctionOutputFactory.rejectContent('redacted'),
+    });
+    const guardedTool = tool({
+      name: 'guarded_output',
+      description: 'guarded tool',
+      parameters: z.object({}),
+      execute: vi.fn(async () => ({ secret: true })),
+      outputGuardrails: [guardrail],
+    }) as any;
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const invokeSpy = vi.spyOn(guardedTool, 'invoke');
+
+    const outputPromise = localTransport.waitForNextFunctionCallOutput();
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'guarded_output',
+      callId: 'c3',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('redacted');
+    expect(invokeSpy).toHaveBeenCalled();
+  });
+
+  it('emits error when output tool guardrail throws', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const localTransport = new FakeTransport();
+    const guardrail = defineToolOutputGuardrail({
+      name: 'thrower_out',
+      run: async () => ToolGuardrailFunctionOutputFactory.throwException(),
+    });
+    const guardedTool = tool({
+      name: 'guarded_output_throw',
+      description: 'guarded tool',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'ok'),
+      outputGuardrails: [guardrail],
+    }) as any;
+    const agent = new RealtimeAgent({
+      name: 'A',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const invokeSpy = vi.spyOn(guardedTool, 'invoke');
+
+    const errorEvent = waitForEvent<any[]>(localSession, 'error');
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'guarded_output_throw',
+      callId: 'c4',
+      status: 'completed',
+      arguments: '{}',
+    } as any);
+
+    const [error] = await errorEvent;
+    expect(error.error).toBeInstanceOf(ToolOutputGuardrailTripwireTriggered);
+    expect(localTransport.sendFunctionCallOutputCalls.length).toBe(0);
+    expect(invokeSpy).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Error handling function call',
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
   });
 
   it('approve and reject work with tool and error without', async () => {
@@ -283,6 +806,626 @@ describe('RealtimeSession', () => {
     await expect(s2.reject(badApproval)).rejects.toBeInstanceOf(
       ModelBehaviorError,
     );
+  });
+
+  it('requests tool approval when no decision exists', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
+
+    const approvalRequest = waitForEvent<any[]>(s, 'tool_approval_requested');
+    t.emit('function_call', {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-1',
+      arguments: '{}',
+      status: 'completed',
+    } as any);
+
+    const [, , payload] = await approvalRequest;
+    expect(payload.type).toBe('function_approval');
+    expect(payload.tool.name).toBe('needs_approval');
+    expect(t.sendFunctionCallOutputCalls.length).toBe(0);
+    expect(invokeSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns a rejection response when approval is denied', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-2',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem);
+    const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, output, startResponse] = await outputPromise;
+    expect(output).toBe('Tool execution was not approved.');
+    expect(startResponse).toBe(true);
+    expect(invokeSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses toolErrorFormatter message when approval is denied', async () => {
+    const customMessage = 'Tool execution was dismissed. You may retry later.';
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: () => customMessage,
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-2b',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem);
+    const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, output, startResponse] = await outputPromise;
+    expect(output).toBe(customMessage);
+    expect(startResponse).toBe(true);
+    expect(invokeSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to default rejection response when toolErrorFormatter throws', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: () => {
+        throw new Error('formatter failed');
+      },
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-2c',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem);
+    const invokeSpy = vi.spyOn(needsApprovalTool, 'invoke');
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, output, startResponse] = await outputPromise;
+    expect(output).toBe('Tool execution was not approved.');
+    expect(startResponse).toBe(true);
+    expect(invokeSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'toolErrorFormatter threw while formatting approval rejection: formatter failed',
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('uses reject message from session.reject when provided', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-msg-1',
+      arguments: '{}',
+    };
+
+    const approvalRequest = waitForEvent<any[]>(s, 'tool_approval_requested');
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, , payload] = await approvalRequest;
+    await s.reject(payload.approvalItem, { message: 'Blocked by admin' });
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('Blocked by admin');
+  });
+
+  it('reuses alwaysReject messages for later realtime tool calls', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalSpy = vi.fn();
+    s.on('tool_approval_requested', approvalSpy);
+
+    const firstToolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-sticky-1',
+      arguments: '{}',
+    };
+    const firstApprovalRequest = waitForEvent<any[]>(
+      s,
+      'tool_approval_requested',
+    );
+    const firstOutputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', firstToolCall as any);
+
+    const [, , firstPayload] = await firstApprovalRequest;
+    await s.reject(firstPayload.approvalItem, {
+      alwaysReject: true,
+      message: 'Blocked by policy',
+    });
+
+    const [, firstOutput] = await firstOutputPromise;
+    expect(firstOutput).toBe('Blocked by policy');
+
+    const secondOutputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', {
+      ...firstToolCall,
+      callId: 'call-sticky-2',
+    } as any);
+
+    const [, secondOutput] = await secondOutputPromise;
+    expect(secondOutput).toBe('Blocked by policy');
+    expect(approvalSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('reject message takes precedence over toolErrorFormatter', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: () => 'formatter message',
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-msg-2',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem, { message: 'per-call message' });
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('per-call message');
+  });
+
+  it('uses an empty reject message when provided', async () => {
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: () => 'formatter message',
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const toolCall: TransportToolCallEvent = {
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: 'call-msg-3',
+      arguments: '{}',
+    };
+    const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
+    s.context.rejectTool(approvalItem, { message: '' });
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', toolCall as any);
+
+    const [, output] = await outputPromise;
+    expect(output).toBe('');
+  });
+
+  it('uses background results without starting a new response', async () => {
+    const backgroundTool = tool({
+      name: 'background_tool',
+      description: 'Background tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      execute: vi.fn(async () => backgroundResult({ ok: true })),
+    });
+    const agent = new RealtimeAgent({
+      name: 'BackgroundAgent',
+      handoffs: [],
+      tools: [backgroundTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const outputPromise = t.waitForNextFunctionCallOutput();
+    t.emit('function_call', {
+      type: 'function_call',
+      name: 'background_tool',
+      callId: 'call-3',
+      arguments: '{}',
+      status: 'completed',
+    } as any);
+
+    const [, output, startResponse] = await outputPromise;
+    expect(output).toBe('{"ok":true}');
+    expect(startResponse).toBe(false);
+  });
+
+  it('approves hosted tool calls by sending MCP responses', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-1',
+          serverLabel: 'server-1',
+        },
+      } as any,
+      agent,
+    );
+
+    await s.approve(approvalItem, { alwaysApprove: true });
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(true);
+    expect(t.sendMcpResponseCalls[0][0]).toMatchObject({
+      type: 'mcp_approval_request',
+      itemId: 'item-1',
+      serverLabel: 'server-1',
+      name: 'hosted_mcp',
+      arguments: { foo: 'bar' },
+      approved: null,
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Always approving MCP tools is not supported. Use the allowed tools configuration instead.',
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('rejects hosted tool calls by sending MCP responses', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-2',
+          serverLabel: 'server-2',
+        },
+      } as any,
+      agent,
+    );
+
+    await s.reject(approvalItem, { alwaysReject: true });
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(false);
+    expect(t.sendMcpResponseCalls[0][0]).toMatchObject({
+      type: 'mcp_approval_request',
+      itemId: 'item-2',
+      serverLabel: 'server-2',
+      name: 'hosted_mcp',
+      arguments: { foo: 'bar' },
+      approved: null,
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Always rejecting MCP tools is not supported. Use the allowed tools configuration instead.',
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('rejects hosted tool calls without an MCP reason when no message is provided', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-default-1',
+          serverLabel: 'server-default-1',
+        },
+      } as any,
+      agent,
+    );
+
+    await s.reject(approvalItem);
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(false);
+    expect(t.sendMcpResponseCalls[0][2]).toBeUndefined();
+  });
+
+  it('does not pass toolErrorFormatter output into hosted MCP reasons', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const formatter = vi.fn(() => 'Formatter denial');
+    const s = new RealtimeSession(agent, {
+      transport: t,
+      toolErrorFormatter: formatter,
+    });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-formatter-1',
+          serverLabel: 'server-formatter-1',
+        },
+      } as any,
+      agent,
+    );
+
+    await s.reject(approvalItem);
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(false);
+    expect(t.sendMcpResponseCalls[0][2]).toBeUndefined();
+    expect(formatter).not.toHaveBeenCalled();
+  });
+
+  it('passes explicit reject messages through for hosted tool calls', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-msg-1',
+          serverLabel: 'server-msg-1',
+        },
+      } as any,
+      agent,
+    );
+
+    await s.reject(approvalItem, { message: 'Denied by policy' });
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(false);
+    expect(t.sendMcpResponseCalls[0][2]).toBe('Denied by policy');
+    expect(t.sendMcpResponseCalls[0][0]).toMatchObject({
+      type: 'mcp_approval_request',
+      itemId: 'item-msg-1',
+      serverLabel: 'server-msg-1',
+      name: 'hosted_mcp',
+      arguments: { foo: 'bar' },
+      approved: null,
+    });
+    expect(s.context.getRejectionMessage('hosted_mcp', 'item-msg-1')).toBe(
+      'Denied by policy',
+    );
+  });
+
+  it('reuses stored reject messages for hosted tool calls', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalItem = new RunToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'hosted_mcp',
+        arguments: JSON.stringify({ foo: 'bar' }),
+        status: 'in_progress',
+        providerData: {
+          itemId: 'item-stored-1',
+          serverLabel: 'server-stored-1',
+        },
+      } as any,
+      agent,
+    );
+
+    s.context.rejectTool(approvalItem, { message: 'Denied by wrapper' });
+    await s.reject(approvalItem);
+
+    expect(t.sendMcpResponseCalls.length).toBe(1);
+    expect(t.sendMcpResponseCalls[0][1]).toBe(false);
+    expect(t.sendMcpResponseCalls[0][2]).toBe('Denied by wrapper');
+  });
+
+  it('emits tool approval requests for MCP approvals', async () => {
+    const agent = new RealtimeAgent({ name: 'MCP', handoffs: [] });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalRequest = waitForEvent<any[]>(s, 'tool_approval_requested');
+    t.emit('mcp_approval_request', {
+      itemId: 'item-3',
+      type: 'mcp_approval_request',
+      serverLabel: 'server-3',
+      name: 'mcp_tool',
+      arguments: { foo: 'bar' },
+      approved: null,
+    });
+
+    const [, , payload] = await approvalRequest;
+    expect(payload.type).toBe('mcp_approval_request');
+    expect(payload.approvalItem.rawItem.type).toBe('hosted_tool_call');
+    expect(payload.approvalItem.rawItem.providerData).toMatchObject({
+      itemId: 'item-3',
+      serverLabel: 'server-3',
+    });
   });
 
   it('handles usage and audio interrupted events', () => {

@@ -96,6 +96,8 @@ export class OpenAIRealtimeWebRTC
   #useInsecureApiKey: boolean;
   #ongoingResponse: boolean = false;
   #muted = false;
+  #connectPromise: Promise<void> | undefined;
+  #connectAttemptId = 0;
 
   constructor(private readonly options: OpenAIRealtimeWebRTCOptions = {}) {
     if (typeof RTCPeerConnection === 'undefined') {
@@ -150,9 +152,13 @@ export class OpenAIRealtimeWebRTC
     }
 
     if (this.#state.status === 'connecting') {
+      if (this.#connectPromise) {
+        return this.#connectPromise;
+      }
       logger.warn(
-        'Realtime connection already in progress. Please await original promise',
+        'Realtime connection already in progress but no promise found',
       );
+      return;
     }
 
     const model = options.model ?? this.currentModel;
@@ -167,8 +173,9 @@ export class OpenAIRealtimeWebRTC
       );
     }
 
+    const attemptId = ++this.#connectAttemptId;
     // eslint-disable-next-line no-async-promise-executor
-    return new Promise<void>(async (resolve, reject) => {
+    this.#connectPromise = new Promise<void>(async (resolve, reject) => {
       try {
         const userSessionConfig: Partial<RealtimeSessionConfig> = {
           ...(options.initialSessionConfig || {}),
@@ -181,6 +188,23 @@ export class OpenAIRealtimeWebRTC
         const dataChannel = peerConnection.createDataChannel('oai-events');
         let callId: string | undefined = undefined;
 
+        const attachConnectionStateHandler = (
+          connection: RTCPeerConnection,
+        ) => {
+          connection.onconnectionstatechange = () => {
+            switch (connection.connectionState) {
+              case 'disconnected':
+              case 'failed':
+              case 'closed':
+                this.close();
+                break;
+              // 'connected' state is handled by dataChannel.onopen. So we don't need to handle it here.
+              // 'new' and 'connecting' are intermediate states and do not require action here.
+            }
+          };
+        };
+        attachConnectionStateHandler(peerConnection);
+
         this.#state = {
           status: 'connecting',
           peerConnection,
@@ -191,45 +215,109 @@ export class OpenAIRealtimeWebRTC
 
         dataChannel.addEventListener('open', () => {
           this.#state = {
-            status: 'connected',
+            status: 'connecting',
             peerConnection,
             dataChannel,
             callId,
           };
-          // Sending the session config again here once the channel is connected to ensure
-          // that the session config is sent to the server before the first response is received
-          // Setting it on connection should work but the config is not being validated on the
-          // server. This triggers a validation error if the config is not valid.
+
+          // Wait for session.updated acknowledgement before resolving connect().
+          // Without this, audio can flow to the server before config (instructions,
+          // tools, modalities) is applied, causing the server to use defaults.
+          let resolved = false;
+          // eslint-disable-next-line prefer-const -- declared before finish() to avoid TDZ if a callback fires synchronously
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          const finish = () => {
+            if (resolved) return;
+            resolved = true;
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+            dataChannel.removeEventListener('message', onConfigAck);
+            dataChannel.removeEventListener('close', onClose);
+            // Reject if the transport was closed/errored while waiting,
+            // the dataChannel is no longer open, or a different connection
+            // attempt is now active (stale timeout from an earlier connect).
+            if (
+              this.#state.status !== 'connecting' ||
+              this.#state.dataChannel !== dataChannel ||
+              dataChannel.readyState !== 'open'
+            ) {
+              // Transition to disconnected if this attempt is still the
+              // active one so that callers can retry connect() without
+              // needing to call close() first.
+              if (this.#state.dataChannel === dataChannel) {
+                this.close();
+              }
+              reject(
+                new Error(
+                  'Connection closed before session config was acknowledged',
+                ),
+              );
+              return;
+            }
+            this.#state = {
+              status: 'connected',
+              peerConnection,
+              dataChannel,
+              callId,
+            };
+            this.emit('connection_change', this.#state.status);
+            this._onOpen();
+            resolve();
+          };
+          const onConfigAck = (ackEvent: MessageEvent) => {
+            const parsed = JSON.parse(ackEvent.data);
+            if (parsed.type === 'session.updated') {
+              finish();
+            }
+          };
+          const onClose = () => {
+            finish();
+          };
+          timeoutId = setTimeout(() => {
+            if (!resolved) {
+              logger.warn(
+                'Timed out waiting for session.updated ack — resolving connect() anyway',
+              );
+              finish();
+            }
+          }, 5000);
+          dataChannel.addEventListener('message', onConfigAck);
+          dataChannel.addEventListener('close', onClose);
+
+          // Register the general message handler AFTER onConfigAck so that
+          // finish() resolves connect() before _onMessage emits the
+          // session.updated event to external listeners.
+          dataChannel.addEventListener('message', (event) => {
+            this._onMessage(event);
+            const { data: parsed, isGeneric } = parseRealtimeEvent(event);
+            if (!parsed || isGeneric) {
+              return;
+            }
+
+            if (parsed.type === 'response.created') {
+              this.#ongoingResponse = true;
+            } else if (parsed.type === 'response.done') {
+              this.#ongoingResponse = false;
+            }
+
+            if (parsed.type === 'session.created') {
+              this._tracingConfig = parsed.session.tracing;
+              // Trying to turn on tracing after the session is created
+              const tracingConfig =
+                typeof userSessionConfig.tracing === 'undefined'
+                  ? 'auto'
+                  : userSessionConfig.tracing;
+              this._updateTracingConfig(tracingConfig);
+            }
+          });
+
           this.updateSessionConfig(userSessionConfig);
-          this.emit('connection_change', this.#state.status);
-          this._onOpen();
-          resolve();
         });
 
         dataChannel.addEventListener('error', (event) => {
           this.close();
           this._onError(event);
           reject(event);
-        });
-
-        dataChannel.addEventListener('message', (event) => {
-          this._onMessage(event);
-          const { data: parsed, isGeneric } = parseRealtimeEvent(event);
-          if (!parsed || isGeneric) {
-            return;
-          }
-
-          if (parsed.type === 'response.created') {
-            this.#ongoingResponse = true;
-          } else if (parsed.type === 'response.done') {
-            this.#ongoingResponse = false;
-          }
-
-          if (parsed.type === 'session.created') {
-            this._tracingConfig = parsed.session.tracing;
-            // Trying to turn on tracing after the session is created
-            this._updateTracingConfig(userSessionConfig.tracing ?? 'auto');
-          }
         });
 
         // set up audio playback
@@ -249,8 +337,13 @@ export class OpenAIRealtimeWebRTC
         peerConnection.addTrack(stream.getAudioTracks()[0]);
 
         if (this.options.changePeerConnection) {
+          const originalPeerConnection = peerConnection;
           peerConnection =
             await this.options.changePeerConnection(peerConnection);
+          if (originalPeerConnection !== peerConnection) {
+            originalPeerConnection.onconnectionstatechange = null;
+          }
+          attachConnectionStateHandler(peerConnection);
           this.#state = { ...this.#state, peerConnection };
         }
 
@@ -285,7 +378,14 @@ export class OpenAIRealtimeWebRTC
         this._onError(error);
         reject(error);
       }
+    }).finally(() => {
+      // Only clear if this is still the active connection attempt.
+      // A newer connect() may have already replaced #connectPromise.
+      if (this.#connectAttemptId === attemptId) {
+        this.#connectPromise = undefined;
+      }
     });
+    return this.#connectPromise;
   }
 
   /**
@@ -322,6 +422,10 @@ export class OpenAIRealtimeWebRTC
     }
   }
 
+  protected override _afterAudioDoneEvent() {
+    this.#ongoingResponse = false;
+  }
+
   /**
    * Close the connection to the Realtime API and disconnects the underlying WebRTC connection.
    */
@@ -332,6 +436,7 @@ export class OpenAIRealtimeWebRTC
 
     if (this.#state.peerConnection) {
       const peerConnection = this.#state.peerConnection;
+      peerConnection.onconnectionstatechange = null;
       peerConnection.getSenders().forEach((sender) => {
         sender.track?.stop();
       });

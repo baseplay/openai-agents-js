@@ -1,4 +1,9 @@
-import { HostedTool } from '@openai/agents-core';
+import {
+  attachClientToolSearchExecutor,
+  HostedTool,
+  type ClientToolSearchExecutor,
+  UserError,
+} from '@openai/agents-core';
 import type OpenAI from 'openai';
 import { z } from 'zod';
 import * as ProviderData from './types/providerData';
@@ -34,7 +39,7 @@ export const ImageGenerationStatus = z
  */
 export type WebSearchTool = {
   type: 'web_search';
-  name?: 'web_search' | 'web_search_preview' | string;
+  name?: 'web_search' | 'web_search_preview' | (string & {});
   /**
    * Optional location for the search. Lets you customize results to be relevant to a location.
    */
@@ -81,7 +86,7 @@ export function webSearchTool(
  */
 export type FileSearchTool = {
   type: 'file_search';
-  name?: 'file_search' | string;
+  name?: 'file_search' | (string & {});
   /**
    * The IDs of the vector stores to search.
    */
@@ -135,10 +140,19 @@ export function fileSearchTool(
 
 export type CodeInterpreterTool = {
   type: 'code_interpreter';
-  name?: 'code_interpreter' | string;
+  name?: 'code_interpreter' | (string & {});
   container?:
     | string
     | OpenAI.Responses.Tool.CodeInterpreter.CodeInterpreterToolAuto;
+};
+
+export type ToolSearchTool<Context = unknown> = {
+  type: 'tool_search';
+  name?: 'tool_search';
+  execution?: OpenAI.Responses.ToolSearchTool['execution'];
+  description?: string | null;
+  parameters?: unknown | null;
+  execute?: ClientToolSearchExecutor<Context>;
 };
 
 /**
@@ -162,21 +176,68 @@ export function codeInterpreterTool(
 }
 
 /**
+ * Adds tool_search capabilities to your agent.
+ *
+ * This lets the model search deferred function tools and load them into context on demand.
+ * By default, tool search is executed by OpenAI. Set `execution: 'client'` to
+ * use a custom loop that receives `tool_search_call` / `tool_search_output`
+ * items. The standard runner only supports the default built-in client schema
+ * (leave `parameters` unset) and auto-executes `{ paths: string[] }` searches
+ * over deferred top-level function tools and deferred namespace members.
+ *
+ * @returns a hosted tool_search definition.
+ */
+export function toolSearchTool<Context = unknown>(
+  options: Partial<Omit<ToolSearchTool<Context>, 'type'>> = {},
+): HostedTool {
+  if (typeof options.name === 'string' && options.name !== 'tool_search') {
+    throw new UserError(
+      'toolSearchTool() only supports the canonical built-in name "tool_search".',
+    );
+  }
+
+  if (typeof options.execute === 'function' && options.execution !== 'client') {
+    throw new UserError(
+      'toolSearchTool() only supports execute when execution is "client".',
+    );
+  }
+
+  const providerData: ProviderData.ToolSearchTool = {
+    type: 'tool_search',
+    name: 'tool_search',
+    execution: options.execution,
+    description: options.description,
+    parameters: options.parameters,
+  };
+  const hostedTool: HostedTool = {
+    type: 'hosted_tool',
+    name: 'tool_search',
+    providerData,
+  };
+
+  if (typeof options.execute === 'function') {
+    attachClientToolSearchExecutor(hostedTool, options.execute);
+  }
+
+  return hostedTool;
+}
+
+/**
  * The built-in Image generation tool
  */
 export type ImageGenerationTool = {
   type: 'image_generation';
-  name?: 'image_generation' | string;
-  background?: 'transparent' | 'opaque' | 'auto' | string;
+  name?: 'image_generation' | (string & {});
+  background?: 'transparent' | 'opaque' | 'auto' | (string & {});
   inputFidelity?: 'high' | 'low' | null;
   inputImageMask?: OpenAI.Responses.Tool.ImageGeneration.InputImageMask;
-  model?: 'gpt-image-1' | string;
-  moderation?: 'auto' | 'low' | string;
+  model?: 'gpt-image-1' | 'gpt-image-1-mini' | 'gpt-image-1.5' | (string & {});
+  moderation?: 'auto' | 'low' | (string & {});
   outputCompression?: number;
-  outputFormat?: 'png' | 'webp' | 'jpeg' | string;
+  outputFormat?: 'png' | 'webp' | 'jpeg' | (string & {});
   partialImages?: number;
-  quality?: 'low' | 'medium' | 'high' | 'auto' | string;
-  size?: '1024x1024' | '1024x1536' | '1536x1024' | 'auto' | string;
+  quality?: 'low' | 'medium' | 'high' | 'auto' | (string & {});
+  size?: '1024x1024' | '1024x1536' | '1536x1024' | 'auto' | (string & {});
 };
 
 /**

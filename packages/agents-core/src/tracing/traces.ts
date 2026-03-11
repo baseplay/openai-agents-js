@@ -7,6 +7,7 @@ export type TraceOptions = {
   groupId?: string;
   metadata?: Record<string, any>;
   started?: boolean;
+  tracingApiKey?: string;
 };
 
 export class Trace {
@@ -15,6 +16,7 @@ export class Trace {
   public name: string;
   public groupId: string | null = null;
   public metadata?: Record<string, any>;
+  public tracingApiKey?: string;
 
   #processor: TracingProcessor;
   #started: boolean;
@@ -24,6 +26,7 @@ export class Trace {
     this.name = options.name ?? 'Agent workflow';
     this.groupId = options.groupId ?? null;
     this.metadata = options.metadata ?? {};
+    this.tracingApiKey = options.tracingApiKey;
     this.#processor = processor ?? defaultProcessor();
     this.#started = options.started ?? false;
   }
@@ -53,17 +56,30 @@ export class Trace {
       groupId: this.groupId ?? undefined,
       metadata: this.metadata,
       started: this.#started,
+      tracingApiKey: this.tracingApiKey,
     });
   }
 
-  toJSON(): object | null {
-    return {
+  /**
+   * Serializes the trace for export or persistence.
+   * Set `includeTracingApiKey` to true only when you intentionally need to persist the
+   * exporter credentials (for example, when handing off a run to another process that
+   * cannot access the original environment). Defaults to false to avoid leaking secrets.
+   */
+  toJSON(options?: { includeTracingApiKey?: boolean }): object | null {
+    const base = {
       object: this.type,
       id: this.traceId,
       workflow_name: this.name,
       group_id: this.groupId,
       metadata: this.metadata,
-    };
+    } as Record<string, any>;
+
+    if (options?.includeTracingApiKey && this.tracingApiKey) {
+      base.tracing_api_key = this.tracingApiKey;
+    }
+
+    return base;
   }
 }
 

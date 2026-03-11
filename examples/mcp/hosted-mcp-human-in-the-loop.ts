@@ -4,8 +4,8 @@ import { stdin, stdout } from 'node:process';
 
 async function confirm(item: RunToolApprovalItem): Promise<boolean> {
   const rl = readline.createInterface({ input: stdin, output: stdout });
-  const name = item.rawItem.name;
-  const params = JSON.parse(item.rawItem.providerData?.arguments || '{}');
+  const name = item.name;
+  const params = JSON.parse(item.arguments ?? '{}');
   const answer = await rl.question(
     `Approve running tool (mcp: ${name}, params: ${JSON.stringify(params)})? (y/n) `,
   );
@@ -16,8 +16,10 @@ async function confirm(item: RunToolApprovalItem): Promise<boolean> {
 async function main(verbose: boolean, stream: boolean): Promise<void> {
   // 'always' | 'never' | { never, always }
   const requireApproval = {
-    never: { toolNames: ['search_codex_code', 'fetch_codex_documentation'] },
-    always: { toolNames: ['fetch_generic_url_content'] },
+    never: { toolNames: ['search_codex_code'] },
+    always: {
+      toolNames: ['fetch_generic_url_content', 'fetch_codex_documentation'],
+    },
   };
   const agent = new Agent({
     name: 'MCP Assistant',

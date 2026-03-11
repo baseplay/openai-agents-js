@@ -2,8 +2,14 @@ import { z } from 'zod';
 import readline from 'node:readline/promises';
 import { Agent, run, tool } from '@openai/agents';
 
+const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
+
 // Prompt user for yes/no confirmation
 async function confirm(question: string): Promise<boolean> {
+  if (AUTO_APPROVE_HITL) {
+    console.log(`[auto-approve] ${question}`);
+    return true;
+  }
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -74,6 +80,11 @@ async function main() {
     );
     const state = stream.state;
     for (const interruption of stream.interruptions) {
+      if (interruption.rawItem.type !== 'function_call') {
+        throw new Error(
+          'Invalid interruption type: ' + interruption.rawItem.type,
+        );
+      }
       const ok = await confirm(
         `Agent ${interruption.agent.name} would like to use the tool ${interruption.rawItem.name} with "${interruption.rawItem.arguments}". Do you approve?`,
       );
@@ -94,4 +105,7 @@ async function main() {
   console.log('\n\nDone');
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

@@ -1,14 +1,387 @@
 # @openai/agents-extensions
 
+## 0.6.0
+
+### Minor Changes
+
+- 09ab47e: fix: remove deprecated top-level AI SDK exports from agents-extensions
+
+  Import `aisdk` and `AiSdkModel` from `@openai/agents-extensions/ai-sdk` instead of `@openai/agents-extensions`.
+
+### Patch Changes
+
+- 559f3d8: fix: allow GA computer tools without display metadata
+- ddd97d5: feat: add Responses tool search support
+- Updated dependencies [8a5135a]
+- Updated dependencies [b2e5236]
+- Updated dependencies [94c18cd]
+- Updated dependencies [98a62a2]
+- Updated dependencies [559f3d8]
+- Updated dependencies [4e6b3fb]
+- Updated dependencies [ddd97d5]
+  - @openai/agents-core@0.6.0
+  - @openai/agents@0.6.0
+
+## 0.5.4
+
+### Patch Changes
+
+- Updated dependencies [7ff108b]
+  - @openai/agents@0.5.4
+  - @openai/agents-core@0.5.4
+
+## 0.5.3
+
+### Patch Changes
+
+- 04b2049: feat: #261 add ai-sdk output text transform hook for provider compatibility
+- c1f7a71: docs: update README files
+- Updated dependencies [b9c0378]
+- Updated dependencies [e9f701e]
+- Updated dependencies [c1f7a71]
+  - @openai/agents-core@0.5.3
+  - @openai/agents@0.5.3
+
+## 0.5.2
+
+### Patch Changes
+
+- Updated dependencies [85cdea4]
+- Updated dependencies [3da9364]
+  - @openai/agents-core@0.5.2
+  - @openai/agents@0.5.2
+
+## 0.5.1
+
+### Patch Changes
+
+- @openai/agents@0.5.1
+- @openai/agents-core@0.5.1
+
+## 0.5.0
+
+### Patch Changes
+
+- Updated dependencies [c590057]
+  - @openai/agents@0.5.0
+  - @openai/agents-core@0.5.0
+
+## 0.4.15
+
+### Patch Changes
+
+- Updated dependencies [40c1709]
+  - @openai/agents-core@0.4.15
+  - @openai/agents@0.4.15
+
+## 0.4.14
+
+### Patch Changes
+
+- Updated dependencies [76a695e]
+  - @openai/agents-core@0.4.14
+  - @openai/agents@0.4.14
+
+## 0.4.13
+
+### Patch Changes
+
+- Updated dependencies [cbadc0f]
+- Updated dependencies [5dfe016]
+- Updated dependencies [6698105]
+  - @openai/agents-core@0.4.13
+  - @openai/agents@0.4.13
+
+## 0.4.12
+
+### Patch Changes
+
+- d9f99b3: fix: #722 normalize data URL images for AI SDK providers
+- Updated dependencies [2cd336a]
+- Updated dependencies [7a05c7b]
+- Updated dependencies [883a114]
+- Updated dependencies [deb282d]
+  - @openai/agents-core@0.4.12
+  - @openai/agents@0.4.12
+
+## 0.4.11
+
+### Patch Changes
+
+- Updated dependencies [afed6f7]
+  - @openai/agents-core@0.4.11
+  - @openai/agents@0.4.11
+
+## 0.4.10
+
+### Patch Changes
+
+- Updated dependencies [de6a5f3]
+  - @openai/agents-core@0.4.10
+  - @openai/agents@0.4.10
+
+## 0.4.9
+
+### Patch Changes
+
+- Updated dependencies [0ca2612]
+  - @openai/agents-core@0.4.9
+  - @openai/agents@0.4.9
+
+## 0.4.8
+
+### Patch Changes
+
+- 4bb2dde: fix(tracing): #955 preserve generation usage metadata via usage.details
+- Updated dependencies [4bb2dde]
+  - @openai/agents-core@0.4.8
+  - @openai/agents@0.4.8
+
+## 0.4.7
+
+### Patch Changes
+
+- 6d202c3: fix(agents-extensions): #945 map AI SDK cacheRead usage to cached_tokens
+- Updated dependencies [219a361]
+- Updated dependencies [d3aa44f]
+  - @openai/agents-core@0.4.7
+  - @openai/agents@0.4.7
+
+## 0.4.6
+
+### Patch Changes
+
+- 8a7b58a: feat: add run-context Codex thread reuse with normalized codex tool naming
+- Updated dependencies [8a7b58a]
+  - @openai/agents-core@0.4.6
+  - @openai/agents@0.4.6
+
+## 0.4.5
+
+### Patch Changes
+
+- Updated dependencies [239bc4f]
+- Updated dependencies [085eebb]
+- Updated dependencies [752d36f]
+- Updated dependencies [bf9a5b4]
+- Updated dependencies [c1fbe95]
+- Updated dependencies [35ab4bd]
+- Updated dependencies [3e20bbd]
+- Updated dependencies [75c92eb]
+  - @openai/agents-core@0.4.5
+  - @openai/agents@0.4.5
+
+## 0.4.4
+
+### Patch Changes
+
+- Updated dependencies [14315e3]
+  - @openai/agents-core@0.4.4
+  - @openai/agents@0.4.4
+
+## 0.4.3
+
+### Patch Changes
+
+- e28d181: test: fail on unexpected stdout/stderr in Vitest
+- Updated dependencies [657cda6]
+- Updated dependencies [e28d181]
+- Updated dependencies [709fa6f]
+  - @openai/agents-core@0.4.3
+  - @openai/agents@0.4.3
+
+## 0.4.2
+
+### Patch Changes
+
+- 605670e: test(realtime,core,extensions): add coverage for approvals, tracing, MCP, and codex helpers
+- 3a2bd9e: feat: add AI SDK data/text stream response adapters for streamed runs
+- Updated dependencies [d76dcfd]
+- Updated dependencies [605670e]
+- Updated dependencies [f1b6f7f]
+- Updated dependencies [7a1fc88]
+- Updated dependencies [3a2bd9e]
+- Updated dependencies [9d10652]
+  - @openai/agents-core@0.4.2
+  - @openai/agents@0.4.2
+
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [60a48d7]
+- Updated dependencies [648a461]
+- Updated dependencies [6cc01be]
+  - @openai/agents-core@0.4.1
+  - @openai/agents@0.4.1
+
+## 0.4.0
+
+### Minor Changes
+
+- e8935bf: chore: #868 make @ai-sdk/provider an optional peer dependency to support v2 and v3
+- 2bce164: feat: #561 Drop Zod v3 support and require Zod v4 for schema-based tools and outputs
+
+### Patch Changes
+
+- Updated dependencies [2bce164]
+- Updated dependencies [4feaaae]
+  - @openai/agents@0.4.0
+  - @openai/agents-core@0.4.0
+
+## 0.3.9
+
+### Patch Changes
+
+- da85934: Improve Codex tool ergonomics: support onStream event hooks, handle additional Codex item types, and fix output schema/inputs validation.
+- da85934: feat: Add experimental codex tool module
+- Updated dependencies [f0ad706]
+  - @openai/agents-core@0.3.9
+  - @openai/agents@0.3.9
+
+## 0.3.8
+
+### Patch Changes
+
+- c6f0211: Fix : correctly extract token counts when AI SDK providers return them as objects instead of numbers (e.g. @ai-sdk/google)
+- d18eb0b: Add regression tests covering agent scenarios
+- c8a9c1d: fix: #709 Share tracing context across runtimes to prevent Deno aisdk context loss
+- a752980: feat: Add ai-sdk v3 support and improve other provider compatibility
+- Updated dependencies [3b368cb]
+- Updated dependencies [303e95e]
+- Updated dependencies [d18eb0b]
+- Updated dependencies [5d9b751]
+- Updated dependencies [a0fc1dc]
+- Updated dependencies [da82f9c]
+- Updated dependencies [20cb95f]
+- Updated dependencies [762d98c]
+- Updated dependencies [c8a9c1d]
+- Updated dependencies [e0ba932]
+- Updated dependencies [41c1b89]
+- Updated dependencies [b233ea5]
+  - @openai/agents-core@0.3.8
+  - @openai/agents@0.3.8
+
+## 0.3.7
+
+### Patch Changes
+
+- Updated dependencies [af1c6c9]
+  - @openai/agents-core@0.3.7
+  - @openai/agents@0.3.7
+
+## 0.3.6
+
+### Patch Changes
+
+- Updated dependencies [af20625]
+- Updated dependencies [e89a54a]
+- Updated dependencies [c536421]
+- Updated dependencies [12d4e44]
+- Updated dependencies [b1ca7c3]
+- Updated dependencies [f7159aa]
+  - @openai/agents-core@0.3.6
+  - @openai/agents@0.3.6
+
+## 0.3.5
+
+### Patch Changes
+
+- 9e1549a: feat(agents-extensions): #628 add Anthropic extended thinking support
+- 2a77585: Improve AI SDK error messages in tracing to include comprehensive error details like responseBody, statusCode, and responseHeaders when tracing is enabled.
+- Updated dependencies [2cb61b0]
+- Updated dependencies [2a4a696]
+- Updated dependencies [820fbce]
+- Updated dependencies [970b086]
+- Updated dependencies [dccc9b3]
+- Updated dependencies [378d421]
+- Updated dependencies [bdbc87d]
+- Updated dependencies [dd1a813]
+  - @openai/agents-core@0.3.5
+  - @openai/agents@0.3.5
+
+## 0.3.4
+
+### Patch Changes
+
+- 870cc20: fix: preserve Gemini thought_signature in multi-turn tool calls
+- 4ea9550: fix: #708 data: string in an input_image message item does not work with some providers
+- Updated dependencies [2e09baf]
+- Updated dependencies [d1d7842]
+- Updated dependencies [c252cb5]
+- Updated dependencies [0345a4c]
+  - @openai/agents-core@0.3.4
+  - @openai/agents@0.3.4
+
+## 0.3.3
+
+### Patch Changes
+
+- 22865ae: feat: #678 Add a list of per-request usage data to Usage
+- Updated dependencies [18fec56]
+- Updated dependencies [b94432b]
+- Updated dependencies [0404173]
+- Updated dependencies [ef0a6d8]
+- Updated dependencies [22865ae]
+  - @openai/agents-core@0.3.3
+  - @openai/agents@0.3.3
+
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [184e5d0]
+- Updated dependencies [0a808d2]
+  - @openai/agents-core@0.3.2
+  - @openai/agents@0.3.2
+
+## 0.3.1
+
+### Patch Changes
+
+- 2b57c4e: introduce new shell and apply_patch tools
+- Updated dependencies [2b57c4e]
+  - @openai/agents-core@0.3.1
+  - @openai/agents@0.3.1
+
+## 0.3.0
+
+### Patch Changes
+
+- b3148a2: Fix open ai compatible models misuse '' in tools arguments call when an empty object is the valid option
+- Updated dependencies [1a5326f]
+  - @openai/agents-core@0.3.0
+  - @openai/agents@0.3.0
+
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [76e5adb]
+  - @openai/agents-core@0.2.1
+  - @openai/agents@0.2.1
+
+## 0.2.0
+
+### Minor Changes
+
+- 0e01da0: feat: #313 Enable tools to return image/file data to an Agent
+- 27915f7: feat: #561 support both zod3 and zod4
+
+### Patch Changes
+
+- Updated dependencies [0e01da0]
+- Updated dependencies [27915f7]
+  - @openai/agents-core@0.2.0
+  - @openai/agents@0.2.0
+
 ## 0.1.5
 
 ### Patch Changes
 
 - 2dfb4fd: feat: add factory-based Cloudflare support.
-  - Realtime (WebSocket): add `createWebSocket` and `skipOpenEventListeners` options to enable
-    custom socket creation and connection state control for specialized runtimes.
-  - Extensions: add `CloudflareRealtimeTransportLayer`, which performs a `fetch()`-based WebSocket
-    upgrade on Cloudflare/workerd and integrates via the WebSocket factory.
+  - Realtime (WebSocket): add `createWebSocket` and `skipOpenEventListeners` options to enable custom socket creation and connection state control for specialized runtimes.
+  - Extensions: add `CloudflareRealtimeTransportLayer`, which performs a `fetch()`-based WebSocket upgrade on Cloudflare/workerd and integrates via the WebSocket factory.
   - @openai/agents@0.1.5
 
 ## 0.1.2

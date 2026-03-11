@@ -2,18 +2,6 @@ import debug from 'debug';
 import { logging } from './config';
 
 /**
- * By default we don't log LLM inputs/outputs, to prevent exposing sensitive data. Set this flag
- * to enable logging them.
- */
-const dontLogModelData = logging.dontLogModelData;
-
-/**
- * By default we don't log tool inputs/outputs, to prevent exposing sensitive data. Set this flag
- * to enable logging them.
- */
-const dontLogToolData = logging.dontLogToolData;
-
-/**
  * A logger instance with debug, error, warn, and dontLogModelData and dontLogToolData methods.
  */
 export type Logger = {
@@ -60,10 +48,14 @@ export function getLogger(namespace: string = 'openai-agents'): Logger {
   return {
     namespace,
     debug: debug(namespace),
-    error: console.error,
-    warn: console.warn,
-    dontLogModelData,
-    dontLogToolData,
+    error: (...args: any[]) => console.error(...args),
+    warn: (...args: any[]) => console.warn(...args),
+    get dontLogModelData() {
+      return logging.dontLogModelData;
+    },
+    get dontLogToolData() {
+      return logging.dontLogToolData;
+    },
   };
 }
 

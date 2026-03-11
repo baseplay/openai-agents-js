@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { serializeTool, serializeHandoff } from '../../src/utils/serialize';
+import { tool, toolNamespace } from '../../src/tool';
+import { z } from 'zod';
 
 describe('serialize utilities', () => {
   it('serializes function tools', () => {
@@ -28,13 +30,85 @@ describe('serialize utilities', () => {
     const t: any = {
       type: 'computer',
       name: 'comp',
-      computer: { environment: 'node', dimensions: { width: 1, height: 2 } },
+      computer: {
+        environment: 'browser',
+        dimensions: [1, 2],
+        screenshot: async () => 'img',
+        click: async () => {},
+        doubleClick: async () => {},
+        drag: async () => {},
+        keypress: async () => {},
+        move: async () => {},
+        scroll: async () => {},
+        type: async () => {},
+        wait: async () => {},
+      },
     };
     expect(serializeTool(t)).toEqual({
       type: 'computer',
       name: 'comp',
-      environment: 'node',
-      dimensions: { width: 1, height: 2 },
+      environment: 'browser',
+      dimensions: [1, 2],
+    });
+  });
+
+  it('serializes GA computer tools without display metadata', () => {
+    const t: any = {
+      type: 'computer',
+      name: 'comp',
+      computer: {
+        screenshot: async () => 'img',
+        click: async () => {},
+        doubleClick: async () => {},
+        drag: async () => {},
+        keypress: async () => {},
+        move: async () => {},
+        scroll: async () => {},
+        type: async () => {},
+        wait: async () => {},
+      },
+    };
+    expect(serializeTool(t)).toEqual({
+      type: 'computer',
+      name: 'comp',
+    });
+  });
+
+  it('throws when computer tool has not been initialized yet', () => {
+    const t: any = {
+      type: 'computer',
+      name: 'comp',
+      computer: async () => ({
+        environment: 'browser',
+        dimensions: [1, 2],
+      }),
+    };
+    expect(() => serializeTool(t)).toThrow(
+      /resolveComputer\(\{ tool, runContext \}\)/,
+    );
+  });
+
+  it('serializes shell tools', () => {
+    const t: any = {
+      type: 'shell',
+      name: 'custom-shell',
+      environment: { type: 'container_reference', containerId: 'cont_123' },
+    };
+    expect(serializeTool(t)).toEqual({
+      type: 'shell',
+      name: 'custom-shell',
+      environment: { type: 'container_reference', containerId: 'cont_123' },
+    });
+  });
+
+  it('serializes apply_patch tools', () => {
+    const t: any = {
+      type: 'apply_patch',
+      name: 'custom-editor',
+    };
+    expect(serializeTool(t)).toEqual({
+      type: 'apply_patch',
+      name: 'custom-editor',
     });
   });
 
@@ -44,6 +118,49 @@ describe('serialize utilities', () => {
       type: 'hosted_tool',
       name: 'bt',
       providerData: { a: 1 },
+    });
+  });
+
+  it('serializes deferred and namespaced function tools', () => {
+    const deferredLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'ok',
+    });
+    const namespacedLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({
+        accountId: z.string(),
+      }),
+      deferLoading: true,
+      execute: async () => 'ok',
+    });
+    const [crmLookup] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools',
+      tools: [namespacedLookup],
+    });
+
+    expect(serializeTool(deferredLookup)).toMatchObject({
+      type: 'function',
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      deferLoading: true,
+    });
+    expect(serializeTool(deferredLookup)).not.toHaveProperty('namespace');
+
+    expect(serializeTool(crmLookup)).toMatchObject({
+      type: 'function',
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      deferLoading: true,
+      namespace: 'crm',
+      namespaceDescription: 'CRM tools',
     });
   });
 

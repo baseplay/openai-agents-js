@@ -1,19 +1,30 @@
 ---
-title: Configuring the SDK
-description: Customize API keys, tracing and logging behavior
+title: Configuration
+description: Configure process-wide OpenAI client, transport, tracing, and logging defaults
 ---
 
 import { Code } from '@astrojs/starlight/components';
 import setDefaultOpenAIKeyExample from '../../../../../examples/docs/config/setDefaultOpenAIKey.ts?raw';
 import setDefaultOpenAIClientExample from '../../../../../examples/docs/config/setDefaultOpenAIClient.ts?raw';
 import setOpenAIAPIExample from '../../../../../examples/docs/config/setOpenAIAPI.ts?raw';
+import setOpenAIResponsesTransportExample from '../../../../../examples/docs/config/setOpenAIResponsesTransport.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 import setTracingDisabledExample from '../../../../../examples/docs/config/setTracingDisabled.ts?raw';
 import getLoggerExample from '../../../../../examples/docs/config/getLogger.ts?raw';
 
-## API keys and clients
+This page covers **SDK-wide defaults** that you usually set once during app startup, such as the default OpenAI client, transport, tracing export key, and debug logging behavior. These settings apply process-wide by default, so this is the right place for universal configuration rather than per-agent or per-run tuning.
 
-By default the SDK reads the `OPENAI_API_KEY` environment variable when first imported. If setting the variable is not possible you can call `setDefaultOpenAIKey()` manually.
+If you need to configure a specific `Agent`, `Runner`, or `run()` call instead, see:
+
+- [Running Agents](/openai-agents-js/guides/running-agents) for `Runner` and per-run options.
+- [Models](/openai-agents-js/guides/models) for agent-level and runner-level model settings.
+- [Tracing](/openai-agents-js/guides/tracing) for run-specific tracing configuration and exporter behavior.
+
+## OpenAI client and transport
+
+### API keys and clients
+
+By default the SDK resolves `OPENAI_API_KEY` lazily when it needs to create an OpenAI client. If setting the environment variable is not possible, call `setDefaultOpenAIKey()` manually.
 
 <Code
   lang="typescript"
@@ -29,13 +40,33 @@ You may also pass your own `OpenAI` client instance. The SDK will otherwise crea
   title="Set default OpenAI client"
 />
 
+### API selection
+
 Finally you can switch between the Responses API and the Chat Completions API.
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="Set OpenAI API" />
 
-## Tracing
+### Responses transport
 
-Tracing is enabled by default and uses the OpenAI key from the section above.
+If you are using the Responses API, you can also choose the OpenAI provider transport. The default is HTTP.
+
+<Code
+  lang="typescript"
+  code={setOpenAIResponsesTransportExample}
+  title="Set Responses transport"
+/>
+
+Use `setOpenAIResponsesTransport('websocket')` to enable the WebSocket transport and `setOpenAIResponsesTransport('http')` to switch back. If you route websocket traffic through a proxy or gateway, set `OPENAI_WEBSOCKET_BASE_URL` (or configure `websocketBaseURL` on your `OpenAIProvider`).
+
+This process-wide default only affects models that are later resolved through the default OpenAI provider. If you pass a concrete `Model` instance or a custom `modelProvider`, configure the transport there instead. See the [Models guide](/openai-agents-js/guides/models#responses-websocket-transport).
+
+## Observability and debugging
+
+### Tracing
+
+Tracing is enabled by default in supported server runtimes. It is disabled by default in browsers and when `NODE_ENV=test`.
+
+By default trace export uses the same OpenAI key from the section above.
 
 A separate key may be set via `setTracingExportApiKey()`:
 
@@ -55,7 +86,7 @@ Tracing can also be disabled entirely:
 
 If you’d like to learn more about the tracing feature, please check out [Tracing guide](/openai-agents-js/guides/tracing).
 
-## Debug logging
+### Debug logging
 
 The SDK uses the [`debug`](https://www.npmjs.com/package/debug) package for debug logging. Set the `DEBUG` environment variable to `openai-agents*` to see verbose logs.
 
@@ -63,11 +94,13 @@ The SDK uses the [`debug`](https://www.npmjs.com/package/debug) package for debu
 export DEBUG=openai-agents*
 ```
 
+To log session persistence activity, set `OPENAI_AGENTS__DEBUG_SAVE_SESSION=1`.
+
 You can obtain a namespaced logger for your own modules using `getLogger(namespace)` from `@openai/agents`.
 
 <Code lang="typescript" code={getLoggerExample} title="Get logger" />
 
-### Sensitive data in logs
+#### Sensitive data in logs
 
 Certain logs may contain user data. Disable them by setting these environment variables.
 

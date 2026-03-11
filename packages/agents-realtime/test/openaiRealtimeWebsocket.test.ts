@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
 import { OpenAIRealtimeWebSocket } from '../src/openaiRealtimeWebsocket';
+import { OpenAIRealtimeSIP } from '../src/openaiRealtimeSip';
+import { RealtimeAgent } from '../src/realtimeAgent';
 
 let lastFakeSocket: any;
 vi.mock('ws', () => {
@@ -157,6 +159,52 @@ describe('OpenAIRealtimeWebSocket', () => {
     ).toBe(true);
   });
 
+  it('does not send truncate events once audio playback completed', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const sendSpy = vi
+      .spyOn(ws as any, 'sendEvent')
+      .mockImplementation(() => {});
+    const p = ws.connect({ apiKey: 'ek', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.output_audio.delta',
+        event_id: 'delta-1',
+        item_id: 'item-a',
+        content_index: 0,
+        delta: 'AA==',
+        output_index: 0,
+        response_id: 'resp-a',
+      }),
+    });
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'response.output_audio.done',
+        event_id: 'done-1',
+        item_id: 'item-a',
+        content_index: 0,
+        output_index: 0,
+        response_id: 'resp-a',
+      }),
+    });
+
+    sendSpy.mockClear();
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'input_audio_buffer.speech_started',
+        event_id: 'speech-1',
+        item_id: 'unused',
+        audio_start_ms: 0,
+      }),
+    });
+
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
   it('sendEvent throws when not connected', () => {
     const ws = new OpenAIRealtimeWebSocket();
     expect(() => ws.sendEvent({ type: 'noop' } as any)).toThrow();
@@ -190,6 +238,37 @@ describe('OpenAIRealtimeWebSocket', () => {
   it('mute throws expected error', () => {
     const ws = new OpenAIRealtimeWebSocket();
     expect(() => ws.mute(true)).toThrow('Mute is not supported');
+  });
+
+  it('disables tracing when initial config sets tracing to null', async () => {
+    const updateSpy = vi.spyOn(
+      OpenAIRealtimeBase.prototype as any,
+      '_updateTracingConfig',
+    );
+    const ws = new OpenAIRealtimeWebSocket();
+    const connectPromise = ws.connect({
+      apiKey: 'ek',
+      model: 'm',
+      initialSessionConfig: {
+        tracing: null,
+      },
+    });
+    await vi.runAllTimersAsync();
+    await connectPromise;
+
+    lastFakeSocket!.emit('message', {
+      data: JSON.stringify({
+        type: 'session.created',
+        event_id: 'evt_1',
+        session: {
+          tracing: 'auto',
+        },
+      }),
+    });
+
+    expect(updateSpy).toHaveBeenCalled();
+    const lastCall = updateSpy.mock.calls.at(-1);
+    expect(lastCall?.[0]).toBeNull();
   });
 
   it('sendAudio only sends when connected', async () => {
@@ -359,5 +438,77 @@ describe('OpenAIRealtimeWebSocket', () => {
     sendSpy.mockClear();
     ws.interrupt();
     expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('connects using callId when provided', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const p = ws.connect({ apiKey: 'ek_test', callId: 'call_abc' });
+    await vi.runAllTimersAsync();
+    await p;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_abc',
+    );
+    ws.close();
+  });
+
+  it('updates cached URL when callId changes', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const first = ws.connect({ apiKey: 'ek_test', callId: 'call_one' });
+    await vi.runAllTimersAsync();
+    await first;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_one',
+    );
+    ws.close();
+
+    const second = ws.connect({ apiKey: 'ek_test', callId: 'call_two' });
+    await vi.runAllTimersAsync();
+    await second;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_two',
+    );
+    ws.close();
+  });
+
+  it('OpenAIRealtimeSIP requires callId', async () => {
+    const sip = new OpenAIRealtimeSIP();
+    await expect(sip.connect({ apiKey: 'ek_test' } as any)).rejects.toThrow(
+      'callId',
+    );
+
+    const p = sip.connect({ apiKey: 'ek_test', callId: 'call_xyz' });
+    await vi.runAllTimersAsync();
+    await p;
+    expect(lastFakeSocket!.url).toBe(
+      'wss://api.openai.com/v1/realtime?call_id=call_xyz',
+    );
+    sip.close();
+  });
+
+  it('OpenAIRealtimeSIP buildInitialConfig returns realtime payload seeded from agent', async () => {
+    const agent = new RealtimeAgent({
+      name: 'sip-agent',
+      handoffs: [],
+      instructions: 'Respond politely.',
+    });
+    const payload = await OpenAIRealtimeSIP.buildInitialConfig(
+      agent,
+      {
+        model: 'gpt-realtime',
+        config: { audio: { output: { speed: 1.5 } } },
+      },
+      { audio: { output: { speed: 2 } } },
+    );
+    expect(payload.type).toBe('realtime');
+    expect(payload.model).toBe('gpt-realtime');
+    expect(payload.instructions).toBe('Respond politely.');
+    expect(payload.audio?.output?.speed).toBe(2);
+  });
+
+  it('OpenAIRealtimeSIP sendAudio throws', () => {
+    const sip = new OpenAIRealtimeSIP();
+    expect(() => sip.sendAudio(new ArrayBuffer(1))).toThrow(
+      'OpenAIRealtimeSIP does not support sending audio buffers',
+    );
   });
 });

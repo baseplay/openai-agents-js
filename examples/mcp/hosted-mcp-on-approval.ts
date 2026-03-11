@@ -3,9 +3,18 @@ import { stdin, stdout } from 'node:process';
 import { Agent, run, hostedMcpTool, RunToolApprovalItem } from '@openai/agents';
 
 async function promptApproval(item: RunToolApprovalItem): Promise<boolean> {
+  if (
+    process.env.AUTO_APPROVE_MCP === '1' ||
+    process.env.AUTO_APPROVE_HITL === '1'
+  ) {
+    console.log(
+      `[auto-approve] Approving tool ${item.name} with ${item.arguments ?? '{}'}`,
+    );
+    return true;
+  }
   const rl = readline.createInterface({ input: stdin, output: stdout });
-  const name = item.rawItem.name;
-  const params = JSON.parse(item.rawItem.providerData?.arguments || '{}');
+  const name = item.name;
+  const params = JSON.parse(item.arguments ?? '{}');
   const answer = await rl.question(
     `Approve running tool (mcp: ${name}, params: ${JSON.stringify(params)})? (y/n) `,
   );
@@ -16,12 +25,8 @@ async function promptApproval(item: RunToolApprovalItem): Promise<boolean> {
 async function main(verbose: boolean, stream: boolean): Promise<void> {
   // 'always' | 'never' | { never, always }
   const requireApproval = {
-    never: {
-      toolNames: ['fetch_codex_documentation', 'fetch_generic_url_content'],
-    },
-    always: {
-      toolNames: ['search_codex_code'],
-    },
+    never: { toolNames: ['fetch_generic_url_content'] },
+    always: { toolNames: ['fetch_codex_documentation', 'search_codex_code'] },
   };
   const agent = new Agent({
     name: 'MCP Assistant',

@@ -309,6 +309,10 @@ export function toolToLanguageV1Tool(
     };
   }
 
+  if (tool.type === 'shell' || tool.type === 'apply_patch') {
+    throw new UserError(`Unsupported tool type: ${tool.type}`);
+  }
+
   const exhaustiveCheck: never = tool;
   throw new Error(`Unsupported tool type: ${exhaustiveCheck}`);
 }
@@ -346,7 +350,7 @@ export function getResponseFormat(
  * If tracing is enabled, the model will send generation spans to your traces processor.
  *
  * ```ts
- * import { aisdk } from '@openai/agents-extensions';
+ * import { aisdk } from '@openai/agents-extensions/ai-sdk';
  * import { openai } from '@ai-sdk/openai';
  *
  * const model = aisdk(openai('gpt-4o'));
@@ -779,7 +783,7 @@ export class AiSdkModel implements Model {
  * If tracing is enabled, the model will send generation spans to your traces processor.
  *
  * ```ts
- * import { aisdk } from '@openai/agents-extensions';
+ * import { aisdk } from '@openai/agents-extensions/ai-sdk';
  * import { openai } from '@ai-sdk/openai';
  *
  * const model = aisdk(openai('gpt-4o'));

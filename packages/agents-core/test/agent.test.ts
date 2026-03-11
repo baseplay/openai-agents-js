@@ -5,8 +5,15 @@ import { Handoff, handoff } from '../src/handoff';
 import { tool } from '../src/tool';
 import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
-import { FakeModelProvider } from './stubs';
+import type { AgentInputItem } from '../src/types';
+import {
+  FakeModel,
+  FakeModelProvider,
+  TEST_MODEL_RESPONSE_BASIC,
+  TEST_MODEL_RESPONSE_WITH_FUNCTION,
+} from './stubs';
 import { Runner, RunConfig } from '../src/run';
+import { RunState } from '../src/runState';
 import logger from '../src/logger';
 
 describe('Agent', () => {
@@ -177,12 +184,12 @@ describe('Agent', () => {
 
     const result1 = await tool.invoke({} as any, 'hey how are you?');
     expect(result1).toBe(
-      'An error occurred while running the tool. Please try again. Error: Error: Invalid JSON input for tool',
+      'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
     );
     setDefaultModelProvider(new FakeModelProvider());
     const result2 = await tool.invoke(
       {} as any,
-      '{"input":"hey how are you?"}',
+      JSON.stringify({ input: 'hey how are you?' }),
     );
     expect(result2).toBe('Hello World');
   });
@@ -203,7 +210,7 @@ describe('Agent', () => {
       toolDescription: 'desc',
     });
 
-    await tool.invoke(new RunContext(), '{"input":"value"}');
+    await tool.invoke(new RunContext(), JSON.stringify({ input: 'value' }));
 
     expect(runSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(
@@ -278,15 +285,1349 @@ describe('Agent', () => {
     expect(calledAgent).toBe(agent);
     expect(calledInput).toBe(inputPayload.input);
     expect(calledOptions).toMatchObject({
-      context: runContext,
       maxTurns: runOptions.maxTurns,
       previousResponseId: runOptions.previousResponseId,
     });
+    const nestedContext = calledOptions?.context as RunContext<unknown>;
+    expect(nestedContext).toBe(runContext);
+    expect(nestedContext.context).toBe(runContext.context);
+    expect(nestedContext.usage).toBe(runContext.usage);
 
     const runnerInstance = runSpy.mock.instances[0] as unknown as Runner;
     expect(runnerInstance.config.model).toBe(runConfig.model);
     expect(runnerInstance.config.modelSettings).toEqual(
       runConfig.modelSettings,
+    );
+  });
+
+  it('exposes agent-tool metadata to customOutputExtractor', async () => {
+    const agent = new Agent({
+      name: 'Context Agent',
+      instructions: 'You do tests.',
+    });
+    const inputPayload = { input: 'translate this' };
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockImplementation(async (_agent, _input, options) => {
+        const state = new RunState(
+          options?.context as RunContext<any>,
+          inputPayload.input,
+          agent,
+          1,
+        );
+        return {
+          state,
+          get runContext() {
+            return state._context;
+          },
+          get agentToolInvocation() {
+            return state._agentToolInvocation;
+          },
+          finalOutput: 'nested output',
+        } as any;
+      });
+    const customOutputExtractor = vi.fn((result: any) => {
+      expect(result.runContext.context).toEqual({ locale: 'en-US' });
+      expect(result.agentToolInvocation.toolName).toBe('Context_Agent_Tool');
+      expect(result.agentToolInvocation.toolCallId).toBe('call-run-context');
+      expect(result.agentToolInvocation.toolArguments).toBe(
+        JSON.stringify(inputPayload),
+      );
+      return 'custom output';
+    });
+    const tool = agent.asTool({
+      toolName: 'Context Agent Tool',
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor,
+    });
+
+    const result = await tool.invoke(
+      new RunContext({ locale: 'en-US' }),
+      JSON.stringify(inputPayload),
+      {
+        toolCall: {
+          type: 'function_call',
+          name: tool.name,
+          callId: 'call-run-context',
+          status: 'completed',
+          arguments: JSON.stringify(inputPayload),
+        },
+      },
+    );
+
+    expect(result).toBe('custom output');
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(customOutputExtractor).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not persist agent-tool metadata when serializing a nested result state', async () => {
+    const agent = new Agent({
+      name: 'Serializable Agent',
+      instructions: 'You do tests.',
+    });
+    const inputPayload = { input: 'serialize this' };
+    const nestedState = new RunState(
+      new RunContext({ locale: 'en-US' }),
+      'input',
+      agent,
+      1,
+    );
+    const runSpy = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
+      state: nestedState,
+      get runContext() {
+        return nestedState._context;
+      },
+      get agentToolInvocation() {
+        return nestedState._agentToolInvocation;
+      },
+      finalOutput: 'nested output',
+    } as any);
+    const customOutputExtractor = vi.fn(async (result: any) => {
+      expect(result.state._agentToolInvocation).toEqual({
+        toolName: 'Serializable_Agent',
+        toolCallId: 'call-serialize',
+        toolArguments: JSON.stringify(inputPayload),
+      });
+      expect(result.state.toJSON()).not.toHaveProperty('agentToolInvocation');
+      const restoredState = await RunState.fromString(
+        agent,
+        result.state.toString(),
+      );
+      expect(restoredState._agentToolInvocation).toBeUndefined();
+      expect(result.agentToolInvocation).toEqual({
+        toolName: 'Serializable_Agent',
+        toolCallId: 'call-serialize',
+        toolArguments: JSON.stringify(inputPayload),
+      });
+      return 'custom output';
+    });
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor,
+    });
+
+    const result = await tool.invoke(
+      new RunContext({ locale: 'en-US' }),
+      JSON.stringify(inputPayload),
+      {
+        toolCall: {
+          type: 'function_call',
+          name: tool.name,
+          callId: 'call-serialize',
+          status: 'completed',
+          arguments: JSON.stringify(inputPayload),
+        },
+      },
+    );
+
+    expect(result).toBe('custom output');
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(customOutputExtractor).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds agent-tool metadata for manual resumes without persistence', async () => {
+    const agent = new Agent({
+      name: 'Resume Agent',
+      instructions: 'You do tests.',
+    });
+    const resumeState = new RunState(
+      new RunContext({ locale: 'en-US' }),
+      'input',
+      agent,
+      1,
+    );
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockImplementation(async (_agent, input) => {
+        expect(input).toBeInstanceOf(RunState);
+        const resumedState = input as RunState<any, any>;
+        return {
+          state: resumedState,
+          get agentToolInvocation() {
+            return resumedState._agentToolInvocation;
+          },
+          finalOutput: 'nested output',
+          rawResponses: [],
+        } as any;
+      });
+    const customOutputExtractor = vi.fn((result: any) => {
+      expect(result.agentToolInvocation).toEqual({
+        toolName: 'ResumeTool',
+        toolCallId: undefined,
+        toolArguments: undefined,
+      });
+      return 'custom output';
+    });
+    const tool = agent.asTool({
+      toolName: 'ResumeTool',
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor,
+    });
+
+    const result = await tool.invoke(
+      new RunContext({ locale: 'en-US' }),
+      JSON.stringify({ input: 'resume this' }),
+      {
+        resumeState: resumeState.toString(),
+      },
+    );
+
+    expect(result).toBe('custom output');
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(customOutputExtractor).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes tool-call abort signal to nested runner when used as a tool', async () => {
+    const agent = new Agent({
+      name: 'Signal Agent',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const inputPayload = { input: 'translate this' };
+    const abortController = new AbortController();
+    await tool.invoke(runContext, JSON.stringify(inputPayload), {
+      toolCall: {
+        type: 'function_call',
+        name: tool.name,
+        callId: 'call-signal',
+        status: 'completed',
+        arguments: JSON.stringify(inputPayload),
+      },
+      signal: abortController.signal,
+    });
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const calledOptions = runSpy.mock.calls[0]?.[2];
+    expect(calledOptions?.signal).toBe(abortController.signal);
+  });
+
+  it('inherits only parent runner model config for nested agent tools by default', async () => {
+    const agent = new Agent({
+      name: 'Inherited Config Agent',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+    });
+    const inheritedProvider = new FakeModelProvider();
+    const parentInputGuardrail = {
+      name: 'parent-input',
+      execute: vi.fn().mockResolvedValue({
+        tripwireTriggered: false,
+        outputInfo: null,
+      }),
+    };
+    const parentOutputGuardrail = {
+      name: 'parent-output',
+      execute: vi.fn().mockResolvedValue({
+        tripwireTriggered: false,
+        outputInfo: null,
+      }),
+    };
+    const handoffInputFilter = vi.fn();
+    const parentRunner = new Runner({
+      modelProvider: inheritedProvider,
+      model: 'parent-model',
+      modelSettings: { temperature: 0.2 },
+      inputGuardrails: [parentInputGuardrail],
+      outputGuardrails: [parentOutputGuardrail],
+      handoffInputFilter,
+      traceIncludeSensitiveData: false,
+      traceId: 'trace_parent_fixed',
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'use inherited config' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelProvider).toBe(inheritedProvider);
+    expect(nestedRunner.config.model).toBe('parent-model');
+    expect(nestedRunner.config.modelSettings).toEqual({ temperature: 0.2 });
+    expect(nestedRunner.config.inputGuardrails).toBeUndefined();
+    expect(nestedRunner.config.outputGuardrails).toBeUndefined();
+    expect(nestedRunner.config.handoffInputFilter).toBeUndefined();
+    expect(nestedRunner.config.traceId).toBeUndefined();
+    expect(nestedRunner.config.traceIncludeSensitiveData).toBe(true);
+  });
+
+  it('does not inherit parent tool-selection modelSettings into nested agent tools', async () => {
+    const agent = new Agent({
+      name: 'Nested Tool Settings Filter Agent',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        temperature: 0.2,
+        toolChoice: 'required',
+        parallelToolCalls: true,
+        providerData: { tenant: 'acme' },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'filter nested tool settings' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings).toEqual({
+      temperature: 0.2,
+      providerData: { tenant: 'acme' },
+    });
+    expect(nestedRunner.config.modelSettings?.toolChoice).toBeUndefined();
+    expect(
+      nestedRunner.config.modelSettings?.parallelToolCalls,
+    ).toBeUndefined();
+  });
+
+  it('does not inherit parent model overrides when agent tool overrides modelProvider', async () => {
+    const agent = new Agent({
+      name: 'Mixed Provider Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const childProvider = new FakeModelProvider();
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelProvider: childProvider,
+      },
+    });
+    const parentProvider = new FakeModelProvider();
+    const parentRunner = new Runner({
+      modelProvider: parentProvider,
+      model: 'parent-model',
+      modelSettings: { temperature: 0.4 },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'use child provider' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelProvider).toBe(childProvider);
+    expect(nestedRunner.config.model).toBeUndefined();
+    expect(nestedRunner.config.modelSettings).toBeUndefined();
+  });
+
+  it('merges inherited modelSettings with agent tool modelSettings overrides', async () => {
+    const agent = new Agent({
+      name: 'Merged Model Settings Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          maxTokens: 42,
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        reasoning: { effort: 'medium' },
+        providerData: { tenant: 'acme' },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'merge model settings' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings).toEqual({
+      reasoning: { effort: 'medium' },
+      providerData: { tenant: 'acme' },
+      maxTokens: 42,
+    });
+  });
+
+  it('deep-merges nested inherited modelSettings objects for agent tool overrides', async () => {
+    const agent = new Agent({
+      name: 'Nested Model Settings Merge Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          reasoning: { summary: 'detailed' },
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        reasoning: { effort: 'medium', summary: 'auto' },
+        text: { verbosity: 'medium' },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'deep merge nested model settings' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings).toEqual({
+      reasoning: { effort: 'medium', summary: 'detailed' },
+      text: { verbosity: 'medium' },
+    });
+  });
+
+  it('merges inherited providerData within nested agent tool modelSettings', async () => {
+    const agent = new Agent({
+      name: 'Merged ProviderData Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          providerData: {
+            extra_body: { child: true },
+            childOnly: 'yes',
+          },
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        providerData: {
+          extra_query: { tenant: 'acme' },
+          extra_headers: { 'X-Proxy': '1' },
+          parentOnly: 'keep',
+        },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'merge provider data' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings?.providerData).toEqual({
+      extra_query: { tenant: 'acme' },
+      extra_headers: { 'X-Proxy': '1' },
+      extra_body: { child: true },
+      parentOnly: 'keep',
+      childOnly: 'yes',
+    });
+  });
+
+  it('merges nested transport override maps within inherited providerData', async () => {
+    const agent = new Agent({
+      name: 'Merged Transport Override ProviderData Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          providerData: {
+            extra_headers: { 'X-Child': '2' },
+            extra_query: { region: 'us' },
+            extra_body: { child: true },
+          },
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        providerData: {
+          extra_headers: { 'X-Parent': '1', 'X-Shared': 'parent' },
+          extra_query: { tenant: 'acme' },
+          extra_body: { parent: true },
+        },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'merge nested transport overrides' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings?.providerData).toEqual({
+      extra_headers: {
+        'X-Parent': '1',
+        'X-Shared': 'parent',
+        'X-Child': '2',
+      },
+      extra_query: {
+        tenant: 'acme',
+        region: 'us',
+      },
+      extra_body: {
+        parent: true,
+        child: true,
+      },
+    });
+  });
+
+  it('merges transport override maps across snake/camel alias keys', async () => {
+    const agent = new Agent({
+      name: 'Merged Alias Transport Override Agent Tool',
+      instructions: 'You do tests.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runConfig: {
+        modelSettings: {
+          providerData: {
+            extra_query: { childRegion: 'us' },
+            extraHeaders: { 'X-Child': '2' },
+            extraBody: { child: true },
+          },
+        },
+      },
+    });
+    const parentRunner = new Runner({
+      modelProvider: new FakeModelProvider(),
+      modelSettings: {
+        providerData: {
+          extraQuery: { parentTenant: 'acme' },
+          extra_headers: { 'X-Parent': '1' },
+          extra_body: { parent: true },
+        },
+      },
+    });
+
+    await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'merge alias transport overrides' }),
+      {
+        parentRunConfig: parentRunner.config,
+      },
+    );
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const nestedRunner = runSpy.mock.instances[0] as unknown as Runner;
+    expect(nestedRunner.config.modelSettings?.providerData).toEqual({
+      extra_query: { parentTenant: 'acme', childRegion: 'us' },
+      extraQuery: { parentTenant: 'acme', childRegion: 'us' },
+      extra_headers: { 'X-Parent': '1', 'X-Child': '2' },
+      extraHeaders: { 'X-Parent': '1', 'X-Child': '2' },
+      extra_body: { parent: true, child: true },
+      extraBody: { parent: true, child: true },
+    });
+  });
+
+  it('combines runOptions and tool-call abort signals for nested runner', async () => {
+    const agent = new Agent({
+      name: 'Combined Signal Agent',
+      instructions: 'You do tests.',
+    });
+    let passedSignal: AbortSignal | undefined;
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockImplementation(async (_agent, _input, options) => {
+        passedSignal = options?.signal;
+        return { rawResponses: [] } as any;
+      });
+    const runOptionsController = new AbortController();
+    runOptionsController.abort(new Error('run-options-abort'));
+
+    const tool = agent.asTool({
+      toolDescription: 'You act as a tool.',
+      customOutputExtractor: () => 'ok',
+      runOptions: {
+        signal: runOptionsController.signal,
+      },
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const inputPayload = { input: 'translate this' };
+    const detailsController = new AbortController();
+    await tool.invoke(runContext, JSON.stringify(inputPayload), {
+      toolCall: {
+        type: 'function_call',
+        name: tool.name,
+        callId: 'call-combined-signal',
+        status: 'completed',
+        arguments: JSON.stringify(inputPayload),
+      },
+      signal: detailsController.signal,
+    });
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(passedSignal).toBeDefined();
+    expect(passedSignal).not.toBe(runOptionsController.signal);
+    expect(passedSignal).not.toBe(detailsController.signal);
+    expect(passedSignal?.aborted).toBe(true);
+    expect(passedSignal?.reason).toBe(runOptionsController.signal.reason);
+  });
+
+  it('supports structured input schemas for agent tools', async () => {
+    const agent = new Agent({
+      name: 'Structured Agent',
+      instructions: 'Handle structured input.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      parameters: z.object({
+        text: z.string(),
+        source: z.string(),
+        target: z.string(),
+      }),
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const args = { text: 'hola', source: 'es', target: 'en' };
+    await tool.invoke(runContext, JSON.stringify(args));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    const calledOptions = call[2];
+    if (!calledOptions) {
+      throw new Error('Expected nested agent run options to be provided');
+    }
+    if (typeof calledInput !== 'string') {
+      throw new Error('Expected structured input to be a string message');
+    }
+    expect(JSON.parse(calledInput)).toEqual(args);
+
+    const nestedContext = calledOptions.context as RunContext<unknown>;
+    expect(nestedContext).not.toBe(runContext);
+    expect(nestedContext.context).toBe(runContext.context);
+    expect(nestedContext.usage).toBe(runContext.usage);
+    expect(nestedContext.toolInput).toEqual(args);
+    expect(runContext.toolInput).toBeUndefined();
+  });
+
+  it('clears stale toolInput for non-structured agent tools', async () => {
+    const agent = new Agent({
+      name: 'Plain Agent',
+      instructions: 'Handle plain input.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Plain tool.',
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const staleToolInput = { text: 'bonjour', source: 'fr', target: 'en' };
+    runContext.toolInput = staleToolInput;
+    await tool.invoke(runContext, JSON.stringify({ input: 'hello' }));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledOptions = call[2];
+    if (!calledOptions) {
+      throw new Error('Expected nested agent run options to be provided');
+    }
+
+    const nestedContext = calledOptions.context as RunContext<unknown>;
+    expect(nestedContext).not.toBe(runContext);
+    expect(nestedContext.context).toBe(runContext.context);
+    expect(nestedContext.usage).toBe(runContext.usage);
+    expect(nestedContext.toolInput).toBeUndefined();
+    expect(runContext.toolInput).toEqual(staleToolInput);
+  });
+
+  it('preserves custom RunContext subclasses when clearing stale toolInput', async () => {
+    class ExtendedRunContext extends RunContext<{ locale: string }> {
+      marker: string;
+
+      constructor(context: { locale: string }, marker: string) {
+        super(context);
+        this.marker = marker;
+      }
+
+      protected override _createFork(): RunContext<{ locale: string }> {
+        return new ExtendedRunContext(this.context, this.marker);
+      }
+
+      describe() {
+        return `${this.context.locale}:${this.marker}`;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'Subclass Plain Agent',
+      instructions: 'Handle plain input.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Plain tool.',
+    });
+
+    const runContext = new ExtendedRunContext({ locale: 'en-US' }, 'marker');
+    runContext.toolInput = { input: 'stale' };
+    await tool.invoke(runContext, JSON.stringify({ input: 'hello' }));
+
+    const call = runSpy.mock.calls[0];
+    if (!call?.[2]) {
+      throw new Error('Expected nested agent run options to be provided');
+    }
+
+    const nestedContext = call[2].context as RunContext<unknown>;
+    expect(nestedContext).toBeInstanceOf(ExtendedRunContext);
+    expect((nestedContext as ExtendedRunContext).describe()).toBe(
+      'en-US:marker',
+    );
+    expect(nestedContext.toolInput).toBeUndefined();
+    expect(runContext.toolInput).toEqual({ input: 'stale' });
+  });
+
+  it('includes a schema summary when structured input has descriptions', async () => {
+    const agent = new Agent({
+      name: 'Schema Summary Agent',
+      instructions: 'Handle structured input with schema summary.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      parameters: z
+        .object({
+          text: z.string().describe('Text to translate'),
+          target: z.string().describe('Target language'),
+        })
+        .describe('Translation input'),
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const args = { text: 'hola', target: 'en' };
+    await tool.invoke(runContext, JSON.stringify(args));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    if (typeof calledInput !== 'string') {
+      throw new Error('Expected structured input to be a string message');
+    }
+    expect(calledInput).toContain('You are being called as a tool.');
+    expect(calledInput).toContain('Input Schema Summary:');
+    expect(calledInput).toContain('text (string, required)');
+    expect(calledInput).toContain('Text to translate');
+    expect(calledInput).toContain('target (string, required)');
+    expect(calledInput).toContain('Target language');
+    expect(calledInput).toContain('"text": "hola"');
+    expect(calledInput).toContain('"target": "en"');
+  });
+
+  it('supports custom structured tool input builders', async () => {
+    const agent = new Agent({
+      name: 'Schema Summary Agent',
+      instructions: 'Handle structured input with schema summary.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const inputItems = [
+      { role: 'user', content: 'custom input' },
+    ] satisfies AgentInputItem[];
+    const inputBuilder = vi.fn(() => inputItems);
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      inputBuilder,
+      parameters: z.object({
+        text: z.string(),
+      }),
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    const args = { text: 'hola' };
+    await tool.invoke(runContext, JSON.stringify(args));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    expect(calledInput).toEqual(inputItems);
+    expect(inputBuilder).toHaveBeenCalledWith({
+      params: args,
+      summary: undefined,
+      jsonSchema: undefined,
+    });
+  });
+
+  it('rejects invalid structured tool input builder output', async () => {
+    const agent = new Agent({
+      name: 'Invalid Builder Agent',
+      instructions: 'Handle structured input.',
+    });
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      inputBuilder: () => 123 as any,
+    });
+
+    const result = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
+    expect(result).toContain('Agent tool called with invalid input');
+  });
+
+  it('includes JSON Schema when includeInputSchema is true', async () => {
+    const agent = new Agent({
+      name: 'Schema Full Agent',
+      instructions: 'Handle structured input with JSON schema.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Structured tool.',
+      includeInputSchema: true,
+      parameters: z.object({
+        text: z.string().describe('Text to translate'),
+        target: z.string().describe('Target language'),
+      }),
+    });
+
+    const runContext = new RunContext();
+    const args = { text: 'hola', target: 'en' };
+    await tool.invoke(runContext, JSON.stringify(args));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    if (typeof calledInput !== 'string') {
+      throw new Error('Expected structured input to be a string message');
+    }
+    expect(calledInput).toContain('Input JSON Schema:');
+    expect(calledInput).toContain('"properties"');
+    expect(calledInput).toContain('"text"');
+    expect(calledInput).toContain('"target"');
+    expect(calledInput).toContain('"text": "hola"');
+    expect(calledInput).toContain('"target": "en"');
+  });
+
+  it('ignores includeInputSchema when parameters are omitted', async () => {
+    const agent = new Agent({
+      name: 'Default Schema Agent',
+      instructions: 'Handle default tool input.',
+    });
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue({ rawResponses: [] } as any);
+    const tool = agent.asTool({
+      toolDescription: 'Default tool schema.',
+      includeInputSchema: true,
+    });
+
+    const runContext = new RunContext({ locale: 'en-US' });
+    await tool.invoke(runContext, JSON.stringify({ input: 'hello' }));
+
+    const call = runSpy.mock.calls[0];
+    if (!call) {
+      throw new Error('Expected nested agent run to be invoked');
+    }
+    const calledInput = call[1];
+    expect(calledInput).toBe('hello');
+    expect(tool.parameters).toMatchObject({
+      type: 'object',
+      properties: expect.objectContaining({
+        input: expect.any(Object),
+      }),
+    });
+  });
+
+  it('uses handled final output when maxTurns error handler completes the tool run', async () => {
+    const agent = new Agent({
+      name: 'MaxTurnsTool',
+      instructions: 'Short runs.',
+      model: new FakeModel([TEST_MODEL_RESPONSE_BASIC]),
+    });
+    const tool = agent.asTool({
+      toolDescription: 'desc',
+      runOptions: {
+        maxTurns: 0,
+        errorHandlers: {
+          maxTurns: () => ({ finalOutput: 'handled output' }),
+        },
+      },
+    });
+
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
+
+    expect(output).toBe('handled output');
+  });
+
+  it('prefers error handler output when maxTurns is exceeded after a model response', async () => {
+    const testTool = tool({
+      name: 'test',
+      description: 'desc',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+    const agent = new Agent({
+      name: 'MaxTurnsToolAfterResponse',
+      instructions: 'Short runs.',
+      model: new FakeModel([
+        TEST_MODEL_RESPONSE_WITH_FUNCTION,
+        TEST_MODEL_RESPONSE_BASIC,
+      ]),
+      tools: [testTool],
+      toolUseBehavior: 'run_llm_again',
+    });
+    const agentToolInvocation = agent.asTool({
+      toolDescription: 'desc',
+      runOptions: {
+        maxTurns: 1,
+        errorHandlers: {
+          maxTurns: () => ({ finalOutput: 'handled summary' }),
+        },
+      },
+    });
+
+    const output = await agentToolInvocation.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
+
+    expect(output).toBe('handled summary');
+  });
+
+  it('falls back to final output when the last response has no output text', async () => {
+    const agent = new Agent({
+      name: 'FinalOutputFallback',
+      instructions: 'Fallback to tool output.',
+    });
+    const runSpy = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
+      rawResponses: [{ output: [] }],
+      finalOutput: 'tool output',
+    } as any);
+    const tool = agent.asTool({
+      toolDescription: 'desc',
+    });
+
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'hi' }),
+    );
+
+    expect(output).toBe('tool output');
+    expect(runSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('streams nested agent events when onStream is provided and still returns final text', async () => {
+    const agent = new Agent({
+      name: 'Streamer Agent',
+      instructions: 'Stream things.',
+    });
+    const streamEvents = [
+      { type: 'raw_model_stream_event', data: { type: 'response_started' } },
+      {
+        type: 'raw_model_stream_event',
+        data: { type: 'output_text_delta', delta: 'hi' },
+      },
+    ] as any[];
+    const streamResult = {
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'final text' }],
+            },
+          ],
+        },
+      ],
+      completed: Promise.resolve(),
+      interruptions: [],
+      [Symbol.asyncIterator]: async function* () {
+        for (const ev of streamEvents) {
+          yield ev;
+        }
+      },
+    };
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue(streamResult as any);
+    const onStream = vi.fn();
+
+    const tool = agent.asTool({
+      toolDescription: 'Stream as tool',
+      onStream,
+    });
+
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'run streaming' }),
+    );
+
+    expect(output).toBe('final text');
+    expect(runSpy).toHaveBeenCalledWith(
+      agent,
+      'run streaming',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(onStream).toHaveBeenCalledTimes(streamEvents.length);
+    expect(onStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: streamEvents[0],
+        agent,
+        toolCall: undefined,
+      }),
+    );
+  });
+
+  it('includes toolCall when streaming from nested agent tools', async () => {
+    const agent = new Agent({
+      name: 'Streamer Agent',
+      instructions: 'Stream things.',
+    });
+    const toolCall = { callId: 'call-123' } as any;
+    const streamEvents = [
+      { type: 'raw_model_stream_event', data: { type: 'response_started' } },
+    ] as any[];
+    const streamResult = {
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'tool output' }],
+            },
+          ],
+        },
+      ],
+      completed: Promise.resolve(),
+      interruptions: [],
+      [Symbol.asyncIterator]: async function* () {
+        for (const ev of streamEvents) {
+          yield ev;
+        }
+      },
+    };
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue(streamResult as any);
+    const onStream = vi.fn();
+
+    const tool = agent.asTool({
+      toolDescription: 'Stream as tool',
+      onStream,
+    });
+
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'run streaming' }),
+      { toolCall },
+    );
+
+    expect(output).toBe('tool output');
+    expect(runSpy).toHaveBeenCalledWith(
+      agent,
+      'run streaming',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(onStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent,
+        toolCall,
+        event: streamEvents[0],
+      }),
+    );
+  });
+
+  it('exposes agent-tool run context to streaming customOutputExtractor', async () => {
+    const agent = new Agent({
+      name: 'Streamer Agent',
+      instructions: 'Stream things.',
+    });
+    const inputPayload = { input: 'run streaming' };
+    const streamEvents = [
+      { type: 'raw_model_stream_event', data: { type: 'response_started' } },
+    ] as any[];
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockImplementation(async (_agent, _input, options) => {
+        const state = new RunState(
+          options?.context as RunContext<any>,
+          inputPayload.input,
+          agent,
+          1,
+        );
+        return {
+          state,
+          rawResponses: [],
+          completed: Promise.resolve(),
+          interruptions: [],
+          get runContext() {
+            return state._context;
+          },
+          get agentToolInvocation() {
+            return state._agentToolInvocation;
+          },
+          finalOutput: 'tool output',
+          [Symbol.asyncIterator]: async function* () {
+            for (const event of streamEvents) {
+              yield event;
+            }
+          },
+        } as any;
+      });
+    const customOutputExtractor = vi.fn((result: any) => {
+      expect(result.agentToolInvocation.toolName).toBe('Streamer_Agent');
+      expect(result.agentToolInvocation.toolCallId).toBe('call-stream-context');
+      expect(result.agentToolInvocation.toolArguments).toBe(
+        JSON.stringify(inputPayload),
+      );
+      return 'custom output';
+    });
+
+    const tool = agent.asTool({
+      toolDescription: 'Stream as tool',
+      onStream: vi.fn(),
+      customOutputExtractor,
+    });
+
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify(inputPayload),
+      {
+        toolCall: {
+          type: 'function_call',
+          name: tool.name,
+          callId: 'call-stream-context',
+          status: 'completed',
+          arguments: JSON.stringify(inputPayload),
+        },
+      },
+    );
+
+    expect(output).toBe('custom output');
+    expect(runSpy).toHaveBeenCalledWith(
+      agent,
+      inputPayload.input,
+      expect.objectContaining({ stream: true }),
+    );
+    expect(customOutputExtractor).toHaveBeenCalledTimes(1);
+  });
+
+  it('supports event handlers registered via on (agent tool only) and wildcard handlers', async () => {
+    const agent = new Agent({
+      name: 'Streamer Agent',
+      instructions: 'Stream things.',
+    });
+    const streamEvents = [
+      { type: 'raw_model_stream_event', data: { type: 'response_started' } },
+      {
+        type: 'run_item_stream_event',
+        name: 'message_output_created',
+        item: { type: 'message_output_item' },
+      },
+    ] as any[];
+    const streamResult = {
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'tool output' }],
+            },
+          ],
+        },
+      ],
+      completed: Promise.resolve(),
+      interruptions: [],
+      [Symbol.asyncIterator]: async function* () {
+        for (const ev of streamEvents) {
+          yield ev;
+        }
+      },
+    };
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue(streamResult as any);
+    const rawHandler = vi.fn();
+    const wildcardHandler = vi.fn();
+
+    const tool = agent.asTool({
+      toolDescription: 'Stream as tool',
+    });
+
+    tool.on('raw_model_stream_event', rawHandler).on('*', wildcardHandler);
+
+    const toolCall = { callId: 'call-abc' } as any;
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'run streaming' }),
+      { toolCall },
+    );
+
+    expect(output).toBe('tool output');
+    expect(runSpy).toHaveBeenCalledWith(
+      agent,
+      'run streaming',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(rawHandler).toHaveBeenCalledTimes(1);
+    expect(rawHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent,
+        toolCall,
+        event: streamEvents[0],
+      }),
+    );
+    expect(wildcardHandler).toHaveBeenCalledTimes(streamEvents.length);
+  });
+
+  it('enables streaming when handlers are registered even without onStream', async () => {
+    const agent = new Agent({
+      name: 'Handler Agent',
+      instructions: 'Stream things.',
+    });
+    const streamEvents = [
+      { type: 'raw_model_stream_event', data: { type: 'response_started' } },
+    ] as any[];
+    const streamResult = {
+      rawResponses: [
+        {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'tool output' }],
+            },
+          ],
+        },
+      ],
+      completed: Promise.resolve(),
+      interruptions: [],
+      [Symbol.asyncIterator]: async function* () {
+        for (const ev of streamEvents) {
+          yield ev;
+        }
+      },
+    };
+    const runSpy = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValue(streamResult as any);
+    const handler = vi.fn();
+
+    const tool = agent.asTool({
+      toolDescription: 'Stream as tool',
+    });
+
+    tool.on('raw_model_stream_event', handler);
+
+    const toolCall = { callId: 'call-xyz' } as any;
+    const output = await tool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'run streaming' }),
+      { toolCall },
+    );
+
+    expect(output).toBe('tool output');
+    expect(runSpy).toHaveBeenCalledWith(
+      agent,
+      'run streaming',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent,
+        toolCall,
+        event: streamEvents[0],
+      }),
     );
   });
 
